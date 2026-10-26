@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>obs_param</name>
+  <version>0.1.0</version>
+  <description>Obstacle Kalman-filter trajectory prediction (ROS 2 port of the MPC-D-CBF package)</description>
+  <maintainer email="huimo-wuling@users.noreply.github.com">huimo-wuling</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>eigen</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

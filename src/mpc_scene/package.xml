@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mpc_scene</name>
+  <version>0.1.0</version>
+  <description>Scene nodes of MPC-D-CBF ported to ROS 2 + Gazebo Sim (odom TF broadcaster, moving obstacles)</description>
+  <maintainer email="huimo-wuling@users.noreply.github.com">huimo-wuling</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>gz-transport15</depend>
+  <depend>gz-msgs12</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

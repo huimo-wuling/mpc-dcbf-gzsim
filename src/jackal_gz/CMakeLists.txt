@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+project(jackal_gz)
+find_package(ament_cmake REQUIRED)
+install(DIRECTORY models DESTINATION share/${PROJECT_NAME})
+ament_package()

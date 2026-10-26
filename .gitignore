@@ -1,0 +1,9 @@
+build/
+install/
+log/
+src/grid_map/
+src/filters/
+__pycache__/
+*.pyc
+results/run_*.json
+results/launch*.log

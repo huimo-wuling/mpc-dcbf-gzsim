@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>local_map</name>
+  <version>0.1.0</version>
+  <description>Local elevation/gradient map + obstacle ellipse extraction (ROS 2 port of the MPC-D-CBF package)</description>
+  <maintainer email="huimo-wuling@users.noreply.github.com">huimo-wuling</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_eigen</depend>
+  <depend>pcl_conversions</depend>
+  <depend>grid_map_ros</depend>
+  <depend>grid_map_msgs</depend>
+  <depend>eigen</depend>
+  <depend>boost</depend>
+  <build_depend>cgal</build_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

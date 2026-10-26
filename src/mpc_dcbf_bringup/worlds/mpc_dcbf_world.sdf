@@ -1,0 +1,99 @@
+<?xml version="1.0" ?>
+<sdf version="1.10">
+  <world name="mpc_dcbf">
+    <physics name="default_physics" type="dartsim">
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.4 0.4 0.4 1.0</ambient><diffuse>0.5 0.5 0.5 1.0</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- The 8 red dynamic-obstacle cylinders: initial poses taken verbatim from the
+         original scene/launch/movetest_node.launch (radius 0.25 m, height 0.5 m,
+         same as scene/worlds/world.world). movetest teleports them each tick. -->
+    <model name="cylinder_0"><static>true</static><pose>5.0 4.0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.1 0.1 1.0</ambient><diffuse>0.8 0.1 0.1 1.0</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="cylinder_1"><static>true</static><pose>3.7 -3.7 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.1 0.1 1.0</ambient><diffuse>0.8 0.1 0.1 1.0</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="cylinder_2"><static>true</static><pose>-4.5 0.5 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.1 0.1 1.0</ambient><diffuse>0.8 0.1 0.1 1.0</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="cylinder_3"><static>true</static><pose>-10.0 -1.9 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.1 0.1 1.0</ambient><diffuse>0.8 0.1 0.1 1.0</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="cylinder_4"><static>true</static><pose>7.0 -0.8 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.1 0.1 1.0</ambient><diffuse>0.8 0.1 0.1 1.0</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="cylinder_5"><static>true</static><pose>-5.0 -2.8 0.20 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.1 0.1 1.0</ambient><diffuse>0.8 0.1 0.1 1.0</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="cylinder_6"><static>true</static><pose>-8.0 -8.0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.1 0.1 1.0</ambient><diffuse>0.8 0.1 0.1 1.0</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="cylinder_7"><static>true</static><pose>-1.2 0.8 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>0.25</radius><length>0.5</length></cylinder></geometry>
+          <material><ambient>0.8 0.1 0.1 1.0</ambient><diffuse>0.8 0.1 0.1 1.0</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- Systems required for the ported pipeline: physics, sensor rendering
+         (GPU lidar), scene broadcasting (RViz/GUI), user commands (obstacle
+         teleport via /world/mpc_dcbf/set_pose). -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <gui fullscreen="0">
+      <camera name="user_camera">
+        <pose>0 -18 12 0 0.5 1.57</pose>
+      </camera>
+    </gui>
+  </world>
+</sdf>
