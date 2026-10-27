@@ -34,28 +34,25 @@ class LocalMapPub : public rclcpp::Node
 public:
   LocalMapPub() : Node("local_map_pub")
   {
-    // parameters (same names and defaults as the original for_simulation.launch)
-    localmap_x_size = declare_parameter<float>("localmap_x_size", 10.0F);
-    localmap_y_size = declare_parameter<float>("localmap_y_size", 10.0F);
-    resolution = declare_parameter<float>("resolution", 0.1F);
-    _inv_resolution = 1.0F / resolution;
+    // Parameters, same names/defaults/order as the original for_simulation.launch.
+    // `localmap_x_size`, `localmap_y_size`, `resolution` and `_inv_resolution`
+    // are the file-scope globals declared in ellipse.hpp; the upstream node
+    // wrote the ROS params straight into them, so this port does the same
+    // (a same-named member would shadow the globals and leave them at 0, which
+    // filters out every point in get_ellipse_array()).
+    ::localmap_x_size = declare_parameter<float>("localmap_x_size", 10.0F);
+    ::localmap_y_size = declare_parameter<float>("localmap_y_size", 10.0F);
+    ::resolution = declare_parameter<float>("resolution", 0.1F);
     obs_height = declare_parameter<float>("obs_height", 0.4F);
     step_height = declare_parameter<float>("step_height", 0.5F);
     DBSCAN_R = declare_parameter<float>("DBSCAN_R", 5.0F);
     DBSCAN_N = declare_parameter<int>("DBSCAN_N", 5);
+    // The upstream node read this default *before* recomputing _inv_resolution,
+    // so it saw the header's static initialiser (1/0.05 = 20) -- reproduced here.
     block_size = declare_parameter<int>(
-        "block_size", static_cast<int>(localmap_x_size * _inv_resolution * 0.2F));
+        "block_size", static_cast<int>(::localmap_x_size * ::_inv_resolution * 0.2F));
     block_num = declare_parameter<int>("block_num", 5);
-
-    // ellipse.hpp keeps the map geometry in file-scope globals (the original
-    // node wrote the ROS params straight into them). This node keeps the same
-    // names as members, which shadow those globals, so mirror the values back
-    // explicitly. Without this the globals stay 0 -> every point is filtered
-    // out in get_ellipse_array() and no obstacle is ever published.
-    ::localmap_x_size = localmap_x_size;
-    ::localmap_y_size = localmap_y_size;
-    ::resolution = resolution;
-    ::_inv_resolution = _inv_resolution;
+    ::_inv_resolution = 1.0F / ::resolution;
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -437,7 +434,6 @@ private:
 
   KMAlgorithm KM_;
 
-  float localmap_x_size, localmap_y_size, resolution, _inv_resolution;
   float DBSCAN_R;
   int DBSCAN_N;
   float step_height, obs_height;
