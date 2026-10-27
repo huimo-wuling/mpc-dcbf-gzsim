@@ -30,10 +30,11 @@ Control to Safety-Critical Obstacle-Avoidance of Mobile Robot》** 的官方代�
 3. **因此做了完整移植**，并修掉了移植过程中暴露的若干致命 bug（详见
    [`docs/port_notes.md`](docs/port_notes.md)），现在：
    * 一条命令启动 `gz sim` 场景 + Jackal + 动态障碍物 + 局部地图 + KF 预测 + MPC-D-CBF + RViz；
-   * 规划器稳定在 **~10 Hz**（平均求解 **32 ms**，p95 92 ms）；
-   * 机器人从 (-10, 0) 出发绕开横穿的动态圆柱并停在终点 (9, 0)（终点误差 0.10 m），
-     用时 **21–28 s**；最小间距 0.075–0.50 m（逐次运行差异较大，见第 6 节分析）；
-   * 复现了论文 Table I 的消融对比（`ours` / `mpc` / `mpc_cbf` / `mpc_kf`），见第 6 节。
+   * 规划器 **18–19 Hz**，MPC 单次求解 **≈19 ms**（p95 ≈ 22–42 ms）；
+   * 机器人从 (-10, 0) 出发、绕开横穿的圆柱并在 **20–23 s** 内停在终点 (9, 0)（误差 0.10 m）；
+     三次重复的最小间距为 **0.546 / -0.110 / 0.337 m**（其中一次与移动圆柱发生擦碰，
+     原因见第 6 节）；
+   * **只复现论文的方法本身**，不含论文的 4 个对比基线（其代码未开源，见第 6 节）。
 
 ---
 
@@ -62,16 +63,17 @@ Control to Safety-Critical Obstacle-Avoidance of Mobile Robot》** 的官方代�
    * ⚠️ 里程计是"相对出生位姿"而非世界真值（`odom_tf` 补上出生位姿）；
    * ⚠️ `numpy.bool_`/Python `int` 触发 ROS 2 新 rosidl 的 `PyBool_Check`/`PyFloat_Check`
      断言 → 进程 abort；
-   * ⚠️ `ReentrantCallbackGroup` 让 MPC 求解并发叠加，单次求解从 0.08 s 恶化到 30 s 量级；
+   * ⚠️ **rclpy 多线程执行器**把 0.03 s 的 MPC 回调拖到 30 s 量级（GIL/执行器竞争），
+     机器人一直执行过期指令；改用单线程执行器（等价于原 `rospy.Timer` 的串行回调）；
    * ⚠️ `local_map` 的全局地图尺寸变量被同名成员变量遮蔽 → 永远检测不到障碍物；
    * ⚠️ `local_map` 私有命名空间话题名写错（应为 `/local_map_pub/for_obs_track`）→ KF 收不到数据；
-   * ⚠️ `obs_kf` 用 100 长度固定数组按单调增长的跟踪标签索引 → 越界 SIGSEGV；
    * ⚠️ apt 的 `python3-casadi` 与 numpy 2.x 不兼容（连 `MX.sym` 都段错误）。
-3. **性能改造**：MPC 的 CasADi 问题从"每周期重建"改为"一次构建 + 参数更新 + 热启动"，
-   与原问题数学等价（有障碍物时 `max|Δu| = 0`），求解 5–10 倍加速且延迟稳定。
+3. **只做"能跑"必需的改动**：算法的代价函数、动力学、输入约束、D-CBF 约束（式 5–7）、
+   IPOPT 参数、椭圆不确定性膨胀、每周期重建 CasADi 问题等**全部保持原样**；上游自带的
+   缺陷（如 `obs_kf` 的固定 100 长度数组）也**有意保留**，见 `docs/port_notes.md` 2.9。
 4. **复现工具**：`scripts/record_run.py`（记录真值/指令/求解耗时）、
-   `scripts/analyze_run.py`（Table I 指标 + 图）、`scripts/compare_variants.py`（多方案对比）、
-   `scripts/run_experiment.sh`、`scripts/run_all_variants.sh`。
+   `scripts/analyze_run.py`（Table I 指标 + 图）、`scripts/run_experiment.sh`、
+   `scripts/run_repeats.sh`（重复实验）。
 
 详细的问题清单见 **[docs/port_notes.md](docs/port_notes.md)**，实验方法见
 **[docs/reproduction.md](docs/reproduction.md)**。
@@ -106,8 +108,6 @@ ros2 launch mpc_dcbf_bringup simulation.launch.py
 ros2 launch mpc_dcbf_bringup simulation.launch.py headless:=true
 # 纯无头（CI / 服务器）
 ros2 launch mpc_dcbf_bringup simulation.launch.py headless:=true rviz:=false
-# 切换消融方案：ours | mpc | mpc_cbf | mpc_kf
-ros2 launch mpc_dcbf_bringup simulation.launch.py variant:=mpc_cbf
 ```
 
 RViz 里能看到：黄色全局路径、机器人局部规划、点云/局部栅格、检测出的椭圆（蓝→红表示
@@ -128,83 +128,54 @@ RViz 里能看到：黄色全局路径、机器人局部规划、点云/局部�
 
 ## 6. 复现论文结果
 
-一条命令跑完整套对比（约 6 分钟，4 个方案各 60 s）：
-
 ```bash
-bash scripts/run_all_variants.sh 60
-# -> results/comparison.md / comparison.png / run_<variant>.json / metrics_<variant>.json
+# 一次完整实验：启动 gz-sim（无头）→ 记录 60 s → 分析 → 出图
+bash scripts/run_experiment.sh 60 results/run.json "MPC-D-CBF"
+# 连续重复 3 次，观察离散性
+bash scripts/run_repeats.sh 3 60
 ```
 
-单方案复现：
+指标用仿真真值评估：障碍物位置由障碍物驱动节点直接发布（它们是被 `set_pose` 绝对设定的，
+发布值即世界真值），机器人位姿用 `DiffDrive` 里程计 + 出生位姿。
 
-```bash
-bash scripts/run_experiment.sh 60 results/run_ours.json "MPC-D-CBF (ours)" ours
-```
+### 6.1 本机三次重复（同一份代码、同一场景，各 60 s）
 
-> 指标用仿真真值评估：障碍物位置由障碍物驱动节点直接发布（它们是被 `set_pose` 绝对
-> 设定的，发布值即世界真值），机器人位姿用 `DiffDrive` 里程计 + 出生位姿。
+| 运行 | Min dist [m] | Cons time [s] | Reac time [s] | Speed var | 重规划 [Hz] | 求解均值 [ms] | 路径 [m] |
+|---|---|---|---|---|---|---|---|
+| #1 | 0.546 | 22.59 | 3.87 | 0.104 | 18.8 | 18.7 | 19.28 |
+| #2 | **-0.110** | 22.24 | 4.10 | 0.115 | 18.4 | 19.4 | 19.48 |
+| #3 | 0.337 | 20.40 | 2.75 | 0.031 | 18.5 | 20.2 | 18.67 |
 
-### 6.1 Table I 复现（本机，单次 60 s，四个方案同一场景）
+论文 Table I（Ours）：Min dist **0.828 m**、Cons time **21.52 s**、Reac time **0.353 s**、
+Speed var **0.0172**。
 
-| 方案 | Min dist [m] | Cons time [s] | Reac time [s] | Speed var | 重规划 [Hz] | MPC 求解均值 [ms] |
-|---|---|---|---|---|---|---|
-| **`ours`（D-CBF + KF 预测）** | 0.365 | 28.00 | 3.65 | 0.133 | 9.6 | 31 |
-| `mpc`（欧氏约束，无预测） | 0.511 | 21.33 | 2.57 | 0.003 | 11.0 | 27 |
-| `mpc_cbf`（D-CBF，无预测） | 0.278 | 23.07 | 3.42 | 0.048 | 9.0 | 34 |
-| `mpc_kf`（欧氏约束 + KF 预测） | 0.318 | 21.18 | 3.32 | 0.008 | 9.6 | 26 |
+![轨迹](results/trajectory.png)
 
-![四方案轨迹对比](results/comparison.png)
+![速度与间距](results/speed_clearance.png)
 
-同一 `ours` 方案重复三次的结果（说明单次运行的离散性）：
+### 6.2 与论文的一致与不一致
 
-| 运行 | Min dist [m] | Cons time [s] | Speed var | 重规划 [Hz] |
-|---|---|---|---|---|
-| #1（上表） | 0.365 | 28.00 | 0.133 | 9.6 |
-| #2 | 0.501 | 22.77 | 0.124 | 10.4 |
-| #3 | **0.075** | 20.95 | 0.082 | 8.8 |
+**一致的部分**
 
-### 6.2 与论文对照：哪些复现了、哪些没有
+* 整条链路（LiDAR → 局部高程图 → DBSCAN → MBE → 匈牙利跟踪 → KF 25 步椭圆预测 →
+  D-CBF/MPC → 差速底盘）与上游实现逐行对应，参数、话题、频率、算法常数均未改动。
+* 到点耗时 20.4–22.6 s，与论文 21.52 s 吻合；路径长度 18.7–19.5 m（直线 19 m），
+  说明避障动作幅度与论文同量级。
+* 实时性：求解 18.7–20.2 ms、重规划 18–19 Hz，高于论文报告的 10 Hz。
+* 障碍物检测/预测链路正常：`/local_map_pub/for_obs_track` 稳定输出椭圆，
+  `/obs_predict_pub` 以 ~10.7 Hz 发布 25 步预测。
 
-**复现了**
+**不一致的部分（如实记录，未做调参美化）**
 
-* 算法与闭环：LiDAR → 局部高程栅格 → DBSCAN → MBE → 匈牙利跟踪 → KF 25 步椭圆预测 →
-  D-CBF/MPC 滚动优化 → 差速底盘，全链路 10 Hz 级运行，机器人安全到达终点（终点误差 0.10 m）。
-* 实时性量级：平均求解 31–34 ms、p95 ≈ 90–100 ms、重规划 8.8–11 Hz，与论文"10 Hz 规划"一致。
-* 定性趋势：`mpc_cbf`（有 CBF 无预测）确实比 `mpc_kf`/`mpc` 更容易贴近障碍物，
-  说明"预测"对安全间距有直接贡献。
-
-**没有复现（诚实记录）**
-
-* **最小间距远小于论文的 0.828 m**：三次 `ours` 分别为 0.365 / 0.501 / 0.075 m，
-  第三次实质上发生了擦碰（机器人中心距圆柱表面 7.5 cm，小于车体半径）。
-* **速度方差比论文大一个量级**（0.08–0.13 vs 0.017）：本移植里 KF 的椭圆不确定性膨胀
-  `a ← a + pos_conf + ab_conf` 更激进，CBF 约束更早、更紧地生效，导致速度在 0.1–1.2 m/s
-  之间反复调节。
-* **某个基线（`mpc`）反而"更安全"**：这主要是基线实现差异——本仓库的欧氏约束给的是
-  "外接圆 + 0.5 m"的硬约束（且继承了 KF 的膨胀半径），比论文的欧氏基线更保守，因此不会碰撞。
-  论文的 4 个基线官方未开源，无法逐位对齐。
-
-**第三次运行的擦碰诊断**（`results/run_ours_r3.json`）：最小间距出现在 t = 9.29 s，
-真实圆柱位于 (-0.04, -0.80)，机器人位于 (-0.15, -0.50)；而同一时刻 `/obs_predict_pub`
-的 125 个预测椭圆（5 个障碍物 × 25 步）中**没有任何一个在该圆柱 1.5 m 以内**。
-也就是说这次失败发生在**感知/跟踪层**（该圆柱在高速横穿时被重新编号、KF 被重建，
-预测值偏离真实位置），而不是 MPC-D-CBF 求解失败。`local_map` 的跟踪标签在几十秒内
-就从 1 涨到 18，正是这种"重新编号"的直接证据。
-
-> 结论：**控制层复现良好，感知层的鲁棒性在本机上没有达到论文水平**。若要工程化，
-> 下一步应固定在 2.5.9 提到的标签生命周期问题（按轨迹预测续期标签，而不是每次重新检测
-> 就新建 KF）。
-
-### 6.3 复现产物
-
-* `results/comparison.md` / `comparison.png`：四方案指标与轨迹对比（对应论文 Fig. 8 / Table I）
-* `results/trajectory.png`：`ours` 的轨迹 + 最近时刻的 CBF 预测椭圆
-* `results/speed_clearance.png`：线速度与最小间距时间曲线
-* `results/metrics_*.json`：各方案指标；`results/run_*.json` 为原始记录（体积较大，已在
-  `.gitignore` 中排除，可用 `scripts/run_experiment.sh` 重新生成）
-
-
----
+* **最小间距达不到 0.828 m**：三次为 0.546 / -0.110 / 0.337 m；第二次与移动圆柱擦碰
+  （中心到表面 -0.11 m）。逐帧排查显示，碰撞时刻真实圆柱在 (-0.14, -0.80)，而 KF 跟踪的
+  椭圆在 (-0.92, 0.35)——**差 0.85 m**：该圆柱在横穿时被重新编号、跟踪丢失，CBF 于是约束
+  在一个错误位置上。这是上游感知/跟踪链路（`local_map` 的标签生命周期 + 匈牙利匹配）
+  的固有问题，按要求**未修改**。
+* **速度方差比论文大 2–7 倍**（0.031–0.115 vs 0.0172）：验证了同样的原因——椭圆不确定性
+  膨胀 `a ← a + pos_conf + ab_conf` 偏大，使 CBF 约束更早、更紧地生效。
+* **范围**：论文 Table I 的 4 个对比基线代码未随论文开源，本仓库只复现论文方法本身，
+  不自行实现替代基线，因此本仓库不含任何方法间对比。
 
 ## 7. 已知差异与局限
 
@@ -212,15 +183,12 @@ bash scripts/run_experiment.sh 60 results/run_ours.json "MPC-D-CBF (ours)" ours
   逐位相同；轮地摩擦、接触求解有细微差别。
 * **LiDAR 采样**：原车是 RS-Helios-32（32 线），这里用 32 线 `gpu_lidar`，方位 720 采样、
   10 Hz，安装高度 0.5 m，与原 `jackal_description` 一致但并非逐参数复刻。
-* **`local_map` 分辨率不一致（原实现遗留）**：`ellipse.hpp` 里 `resolution` 硬编码 0.05，
-  而节点参数是 0.1。原仓库即如此，移植版保留相同行为，只把被遮蔽的全局量补回。
-* **基线实现**：论文 Table I 的四个基线（MPC / MPC-CBF / MPC-KF / MPC-CBF-curvefit）官方
-  并未开源。本仓库用**同一套规划器**的参数化消融来近似：`mpc`/`mpc_kf` 用
-  "到椭圆外接圆 + 0.5 m 安全裕度"的欧氏约束替代 CBF；`mpc_cbf`/`mpc` 关闭轨迹预测
-  （整段时域沿用当前椭圆）。因此表中绝对数值不能与论文逐项对齐，但**趋势**可对照。
+* **保留的上游问题**：`obs_kf` 的固定 100 长度数组（标签单调增长，长跑会越界）、
+  `ellipse.hpp` 里 `resolution` 与节点参数不一致、`get_ellipse_array()` 退化分支的未初始化
+  字段——这些是原仓库自带的问题，按要求保持原样（详见 `docs/port_notes.md` 2.9）。
 * **障碍物布局**：直接沿用原仓库 `world.world` 的 8 个圆柱及其速度（r=0.25 m、h=0.5 m），
   它们以 0.5–1.0 m/s 穿越机器人路径。
-* **实时性**：本机 32 核，平均求解 32 ms；论文在 Intel NUC（i5 2.4 GHz）上跑 10 Hz，量级一致。
+* **实时性**：本机（32 核）平均求解 19 ms、重规划 18–19 Hz；论文在 Intel NUC 上报告 10 Hz。
 
 ## 8. 目录结构
 
@@ -269,9 +237,12 @@ This repo ports the official code of *Dynamic Control Barrier Function-based MPC
 parameters and the algorithm are unchanged; the port fixes several bugs that
 break the closed loop on ROS 2 (unsubscribed `/cmd_vel`, mismatched bridge
 topics, relative odometry, rosidl `PyBool_Check`/`PyFloat_Check` aborts,
-reentrant timer causing overlapping IPOPT solves, unset `local_map` globals,
-wrong `/local_map_pub/*` namespace, out-of-bounds `obs_kf` array, casadi/numpy
-ABI mismatch). The CasADi NLP is built once and warm started, giving an
-equivalent problem (`max|Δu| = 0`) at ~30 ms per solve and ~10 Hz replanning.
-`scripts/run_all_variants.sh` reproduces the paper's Table I ablation
-(ours / mpc / mpc_cbf / mpc_kf). See `docs/port_notes.md` for the full list.
+unset `local_map` globals, wrong `/local_map_pub/*` namespace, casadi/numpy ABI
+mismatch, and an rclpy multithreaded executor that stretched a 0.03 s callback
+to tens of seconds).
+
+The algorithm itself is kept as-is: the CasADi problem is still rebuilt every
+cycle, the IPOPT options and the ellipse inflation are untouched, and upstream
+quirks (e.g. the `obs_kf` fixed-size array) are preserved on purpose. `scripts/run_experiment.sh` /
+`scripts/run_repeats.sh` run the paper's scenario and report the Table-I style
+metrics (single method, no invented baselines). See `docs/port_notes.md`.

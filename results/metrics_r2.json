@@ -1,0 +1,22 @@
+{
+  "label": "MPC-D-CBF (run 2)",
+  "min_dist_m": -0.10959002884410238,
+  "cons_time_s": 22.241,
+  "react_time_s": 4.101,
+  "speed_var": 0.11456132211985892,
+  "path_length_m": 19.48483591095104,
+  "final_xy": [
+    8.9,
+    -0.0
+  ],
+  "final_dist_to_goal_m": 0.09999999999999964,
+  "local_plan_hz": 18.383333333333333,
+  "obs_predict_hz": 10.733333333333333,
+  "duration_s": 60.0,
+  "mpc_latency": {
+    "mean_s": 0.01937312326227989,
+    "p95_s": 0.02090999999999999,
+    "max_s": 0.0863,
+    "n": 1079
+  }
+}

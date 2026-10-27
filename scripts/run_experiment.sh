@@ -2,14 +2,13 @@
 # Run one closed-loop reproduction experiment end to end:
 #   launch gz-sim (headless) -> record ground truth -> stop -> analyse -> plots
 #
-# Usage: scripts/run_experiment.sh [duration_s] [output_json] [label] [variant]
+# Usage: scripts/run_experiment.sh [duration_s] [output_json] [label]
 set -o pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DURATION=${1:-90}
 OUT=${2:-"$ROOT/results/run_ours.json"}
 LABEL=${3:-"MPC-D-CBF (ours)"}
-VARIANT=${4:-ours}
 DISTRO=${ROS_DISTRO:-lyrical}
 
 mkdir -p "$ROOT/results"
@@ -33,9 +32,9 @@ cleanup() {
   wait "$LAUNCH_PID" 2>/dev/null
 }
 
-echo "[1/3] launching gz-sim (headless), planner variant '$VARIANT' ..."
+echo "[1/3] launching gz-sim (headless) ..."
 ros2 launch mpc_dcbf_bringup simulation.launch.py headless:=true rviz:=false \
-  variant:="$VARIANT" > "$ROOT/results/launch_$VARIANT.log" 2>&1 &
+  > "$ROOT/results/launch.log" 2>&1 &
 LAUNCH_PID=$!
 trap cleanup EXIT
 
@@ -50,5 +49,5 @@ trap - EXIT
 
 echo "[3/3] analysing ..."
 python3 "$ROOT/scripts/analyze_run.py" --input "$OUT" --outdir "$ROOT/results" \
-  --label "$LABEL" --tag "$VARIANT"
+  --label "$LABEL"
 echo "done: $ROOT/results/metrics.md, trajectory.png, speed_clearance.png"

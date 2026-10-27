@@ -90,40 +90,21 @@ std_msgs__msg__color_rgba__convert_from_py: Assertion `PyFloat_Check(field)' fai
 `color.r = 1`（Python int）都会触发 **进程 abort（exit -6）**。ROS 1 下是隐式转换，
 旧版 ROS 2 也宽松。修复：显式 `bool(...)` / `0.0` / `1.0` / `float(...)`。
 
-### ⚠️ 2.5 `ReentrantCallbackGroup` 让 MPC 求解互相叠加
+### ⚠️ 2.5 rclpy 多线程执行器把 0.03 s 的回调拖成几十秒
 
-最初把重规划定时器和订阅都放进 `ReentrantCallbackGroup` 并配 `MultiThreadedExecutor`。
-在 `rclpy` 中，reentrant 组的定时器回调**可以并发执行**：一轮 `opti.solve()` 还没结束，
-下一轮已经开始，线程池被 20 Hz 的回调迅速填满，单次求解耗时从 0.08 s 恶化到 30 s 量级
-（实测 `DT goal 34 s / mpc 34 s`），控制器只能一直执行过期指令，机器人冲过终点。
-ROS 1 的 `rospy.Timer` 是串行回调，不会有这个问题。
+最初沿用 ROS 2 常见写法：`MultiThreadedExecutor` + `ReentrantCallbackGroup`。结果是
+同一个 `MPC_ellip()` 在离线脚本里稳定 **0.030 s**，在节点里却从 0.2 s 一路涨到
+**33 s**（实测 `CB mpc 27.264`、`mpc 33.698`），机器人因此一直执行过期指令、冲过终点。
 
-修复：**订阅**留在 reentrant 组（求解期间仍能刷新 `/curr_state`、`/obs_predict_pub`），
-**重规划定时器**放进 `MutuallyExclusiveCallbackGroup`，恢复原实现的串行语义。
+原因不是 IPOPT：分段计时显示 `solve 0.02 s`、`constr 0.01–4.8 s`——变慢的是**回调的墙钟
+时间**，即 Python 回调在多线程执行器里与大量订阅回调（`/curr_state` 50 Hz、`/global_path`
+10 Hz×190 个路点）竞争 GIL/执行器锁而被反复抢占。
 
-### ⚠️ 2.6 每周期重建 CasADi 问题：延迟抖动与卡死
+修复：规划器改用 **`SingleThreadedExecutor`**。这更接近原实现——`rospy.Timer` 的回调本身
+就是串行的，而 rclpy 的多线程执行器是移植时"顺手"引入的。改回单线程后同一个回调稳定在
+**0.032 s/周期（≈15–19 Hz）**。
 
-原 `MPC_ellip()` 每个周期都 `ca.Opti()` 重新搭建 NLP。在 ROS 2 节点里，符号构建阶段
-（`ca.vertcat`/`subject_to`）会随运行时间从 0.05 s 抖动到数秒（实测 `constr 4.8 s`），
-一旦错过 deadline 就会连锁恶化。
-
-修复：**一次性构建参数化 NLP**，之后只更新参数并用上一解热启动：
-
-| 参数 | 含义 | 维度 |
-|---|---|---|
-| `p_x0` | 当前状态 | 3 |
-| `p_vlb` | 速度下界（`v_min` / `-v_min` 切换） | 1 |
-| `p_goal` | 参考轨迹 | N×3 |
-| `p_obs` | 预测椭圆（`MAX_OBS*N` 行，每行 `x, y, a, b, theta`） | 125×5 |
-
-代价函数、动力学、输入约束、D-CBF 约束（式 5–7）与原实现完全一致。等价性验证：
-对同一状态/同一组障碍物，新旧实现在有障碍物时 `max|Δu| = 0.0000`、`max|Δx| = 0.0000`
-（无约束退化情形差 0.018，属求解器容差）。平均求解 30 ms（p95 92 ms）。
-
-不活跃的障碍物槽位被"停"到 60 m 以外，其 CBF 约束自然满足，从而不需要为障碍物
-数量重建问题结构（论文设定 n = 5，代码里 `MAX_OBS = 5` 与之一致）。
-
-### ⚠️ 2.7 `local_map` 的全局变量没有赋值 → 永远检测不到障碍物
+### ⚠️ 2.6 `local_map` 的全局变量没有赋值 → 永远检测不到障碍物
 
 `local_map/include/ellipse.hpp` 里有文件作用域全局变量：
 
@@ -139,7 +120,7 @@ float resolution = 0.05, _inv_resolution = 1.0 / resolution;
 
 修复：构造时显式镜像 `::localmap_x_size = localmap_x_size;` 等四个全局量。
 
-### ⚠️ 2.8 `local_map` 话题命名空间错了 → KF 收不到障碍物
+### ⚠️ 2.7 `local_map` 话题命名空间错了 → KF 收不到障碍物
 
 原节点用私有 `NodeHandle("~")`，因此发布的话题是 `/local_map_pub/for_obs_track`
 （RViz 配置里也是 `/local_map_pub/gridmap`、`/local_map_pub/local_pcd`、
@@ -149,21 +130,7 @@ float resolution = 0.05, _inv_resolution = 1.0 / resolution;
 
 修复：四个发布器改回 `/local_map_pub/...`。
 
-### ⚠️ 2.9 `obs_kf` 用固定数组按跟踪标签索引 → 越界崩溃
-
-```cpp
-const size_t obs_kf_buffer_size = 100;
-obs_kf _obs_kf[obs_kf_buffer_size];      // 原实现
-...
-_obs_kf[flag].param_list.push_back(_obs_tmp);
-```
-
-`flag` 来自 `local_map` 的跟踪标签，而标签在每次重新检测时会**单调增长**，长时间运行
-必然超过 100 → 越界写 → SIGSEGV（实测 `obs_kf exit code -11`，避障随即失效）。
-修复：改成 `std::map<int, std::unique_ptr<ObsKF>>`，超过 100 个标签时淘汰最旧的，
-同时限制单个障碍物的观测队列长度。
-
-### 2.10 CasADi / IPOPT 在 Ubuntu 26.04 上的坑
+### ⚠️ 2.8 CasADi / IPOPT 在 Ubuntu 26.04 上的坑
 
 apt 的 `python3-casadi` (3.7.0) 是针对 numpy 1.x 编译的，与本机 numpy 2.3.5 不兼容：
 连 `casadi.MX.sym('x')` 都会段错误。改用 PyPI 的 `casadi`（3.8.1，`abi3` wheel，
@@ -173,7 +140,19 @@ apt 的 `python3-casadi` (3.7.0) 是针对 numpy 1.x 编译的，与本机 numpy
 pip3 install --user --break-system-packages casadi==3.8.1
 ```
 
-### 2.11 其它
+### 2.9 有意保留的上游问题（为了保真，不做修改）
+
+用户要求"只让原论文的实现能在本机跑起来，不改它本身的问题"，因此下面这些**上游自带**的
+缺陷被原样保留：
+
+* `obs_kf.cpp` 用固定 100 长度的数组按跟踪标签索引（`ObsKF _obs_kf[obs_kf_buffer_size]`）。
+  `local_map` 的标签是单调递增的，长跑会越界——这是原实现的问题，未改动。
+* `ellipse.hpp` 里 `resolution` 硬编码 0.05，而节点参数是 0.1（原仓库即如此）。
+* `get_ellipse_array()` 的退化分支里 `Ellipse ellipse;` 的 `label/variance` 未初始化
+  （唯一例外：移植版把这两个字段显式置 0，否则行为不可复现）。
+* MPC 每个周期重新构建 CasADi 问题（原实现如此，实测 0.03 s/周期，不需要优化）。
+
+### 2.10 其它
 
 * `mpc_scene/movetest.cpp`：从 `gazebo_ros` 的 `/gazebo/set_model_state` 服务改为
   gz-transport 请求 `/world/mpc_dcbf/set_pose`，100 Hz 遥操作语义不变（`<static>true</static>`
@@ -182,3 +161,4 @@ pip3 install --user --break-system-packages casadi==3.8.1
 * `headless:=true` 原来并没有生效（`gz_sim.launch.py` 没有该参数），现在 headless 时
   用 `-s` 只启动服务端，否则启动 GUI。
 * `scripts/import_repos.sh` 用纯 `git` 拉取 grid_map/filters（不依赖 `vcs`）。
+* 规划器额外发布 `/local_planner/solve_time`（Float32），只用于记录求解耗时，不参与控制。

@@ -7,8 +7,6 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include <chrono>
-#include <map>
-#include <memory>
 #include <vector>
 
 #include "kalman.h"
@@ -257,12 +255,9 @@ private:
       _obs_tmp.theta = msg->data[7 * i + 4];
       _obs_tmp.mea_cov = msg->data[7 * i + 6];
 
-      ObsKF &kf = kf_for(flag);
-      kf.param_list.push_back(_obs_tmp);
-      if (kf.param_list.size() > kObsKfBufferSize)
-        kf.param_list.erase(kf.param_list.begin());
+      _obs_kf[flag].param_list.push_back(_obs_tmp);
 
-      curve_fitting(kf, obs_pub, ellipses_array);
+      curve_fitting(_obs_kf[flag], obs_pub, ellipses_array);
     }
 
     pub_->publish(obs_pub);
@@ -272,23 +267,11 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr sub_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr vis_pub_;
-  // The original declared a fixed array indexed by the obstacle tracking
-  // label. Labels grow monotonically in local_map (every re-detection gets a
-  // new id), so long runs walk past the end of the array and crash; a map
-  // keeps the original semantics for any label.
-  std::map<int, std::unique_ptr<ObsKF>> _obs_kf;
-
-  ObsKF &kf_for(int flag)
-  {
-    auto it = _obs_kf.find(flag);
-    if (it == _obs_kf.end())
-    {
-      if (_obs_kf.size() >= kObsKfBufferSize)
-        _obs_kf.erase(_obs_kf.begin());  // drop the oldest label
-      it = _obs_kf.emplace(flag, std::make_unique<ObsKF>()).first;
-    }
-    return *it->second;
-  }
+  // Kept exactly as in the upstream implementation (fixed array indexed by the
+  // obstacle tracking label). local_map hands out monotonically increasing
+  // labels, so a long enough run walks past the end of this array -- that is an
+  // upstream limitation and is intentionally NOT changed here.
+  ObsKF _obs_kf[kObsKfBufferSize];
 };
 
 int main(int argc, char **argv)

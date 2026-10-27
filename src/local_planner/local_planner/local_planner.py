@@ -11,7 +11,7 @@ import casadi as ca
 
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 
 from std_msgs.msg import Bool, Float32, Float32MultiArray, ColorRGBA
@@ -29,20 +29,6 @@ class LocalPlanner(Node):
         super().__init__('phri_planner')
         self.declare_parameter('replan_period', 0.05)
         self.replan_period = self.get_parameter('replan_period').value
-
-        # Ablation switch reproducing Table I of the paper:
-        #   ours      : D-CBF constraint with KF-predicted ellipses
-        #   mpc       : Euclidean keep-out constraint, no prediction
-        #   mpc_cbf   : D-CBF constraint, no prediction (current ellipse only)
-        #   mpc_kf    : Euclidean keep-out constraint with KF prediction
-        self.declare_parameter('variant', 'ours')
-        self.variant = self.get_parameter('variant').value
-        if self.variant not in ('ours', 'mpc', 'mpc_cbf', 'mpc_kf'):
-            self.get_logger().warn(
-                "unknown variant '%s', falling back to 'ours'" % self.variant)
-            self.variant = 'ours'
-        self.use_dcbf = self.variant in ('ours', 'mpc_cbf')
-        self.use_prediction = self.variant in ('ours', 'mpc_kf')
 
         self.z = 0
         self.N = 25
@@ -63,13 +49,6 @@ class LocalPlanner(Node):
         self.obstacle_lock = threading.Lock()
 
         self.ob = []
-        self.last_solve_time = 0.0
-
-        # Build the (parameterised) NLP once; see MPC_ellip for the rationale.
-        self._nlp = self._build_nlp(self.use_dcbf)
-        self.get_logger().info(
-            "planner variant '%s' (D-CBF=%s, prediction=%s)" % (
-                self.variant, self.use_dcbf, self.use_prediction))
 
         # Subscriptions live in a reentrant group so that /curr_state and
         # /obs_predict_pub keep being refreshed while the (blocking) MPC solve
@@ -97,7 +76,8 @@ class LocalPlanner(Node):
         self.pub_local_path = self.create_publisher(Path, '/local_path', 10)
         self.pub_local_plan = self.create_publisher(Float32MultiArray, '/local_plan', 10)
         self.pub_start = self.create_publisher(Bool, '/cmd_move', 10)
-        # MPC latency, used by scripts/record_run.py to report planning times
+        # measurement only (never fed back into the controller): IPOPT solve
+        # time, recorded by scripts/record_run.py
         self.pub_solve_time = self.create_publisher(Float32, '/local_planner/solve_time', 10)
 
     def replan_cb(self):
@@ -264,207 +244,124 @@ class LocalPlanner(Node):
         self.global_path_lock.release()
         return True
 
-    # ------------------------------------------------------------------
-    # MPC with dynamic elliptical CBF constraints (paper Eq. 5-9)
-    #
-    # The ROS 1 original rebuilt the whole CasADi problem on every 0.05 s
-    # cycle.  Here the symbolic construction turned out to be the dominant,
-    # highly jittery cost (measured from ~0.05 s up to several seconds per
-    # cycle under simulation load), which makes the loop miss its deadline,
-    # leaves the controller replaying a stale plan and lets the robot drive
-    # past the goal.  The NLP is therefore built once and driven through
-    # parameters, with a warm start from the previous solution:
-    #     p_x0   current state                       (3,)
-    #     p_vlb  lower bound on v (v_min / -v_min)   (1,)
-    #     p_goal reference horizon                   (N, 3)
-    #     p_obs  predicted obstacle ellipses         (MAX_OBS*N, 5)
-    # The mathematical problem (cost, dynamics, input bounds, D-CBF
-    # constraints) is unchanged; only the re-solve strategy is different.
-    # ------------------------------------------------------------------
-    MAX_OBS = 5        # paper: n = 5 obstacles inside the horizon
-    OB_FAR = 60.0      # inactive obstacle slots are parked this far away
-
-    @staticmethod
-    def _quadratic(x, A):
-        return ca.mtimes([x, A, x.T])
-
-    @staticmethod
-    def _h(curpos_, ob_):
-        """D-CBF (paper Eq. 7) with the ellipse distance of Eq. 6."""
-        safe_dist = 0.5  # for jackal
-
-        c = ca.cos(ob_[4])
-        s = ca.sin(ob_[4])
-        a = ob_[2]
-        b = ob_[3]
-
-        ob_vec = ca.vertcat(ob_[0], ob_[1])
-        center_vec = curpos_[:2] - ob_vec.T
-
-        dist = b * (ca.sqrt((c ** 2 / a ** 2 + s ** 2 / b ** 2) * center_vec[0] ** 2 +
-                            (s ** 2 / a ** 2 + c ** 2 / b ** 2) * center_vec[1] ** 2 +
-                            2 * c * s * (1 / a ** 2 - 1 / b ** 2) * center_vec[0] * center_vec[1]) - 1) - safe_dist
-
-        return dist
-
-    def _exceed_ob(self, ob_):
-        """True when the obstacle is already behind the goal (constraint
-        dropped, as in the original implementation)."""
-        l_long_axis = ob_[2]
-        l_short_axis = ob_[3]
-        long_axis = np.array([np.cos(ob_[4]) * l_long_axis, np.sin(ob_[4]) * l_long_axis])
-
-        ob_vec = np.array([ob_[0], ob_[1]])
-        center_vec = self.goal_state[self.N - 1, :2] - ob_vec
-        dist_center = np.linalg.norm(center_vec)
-        if dist_center < 1e-6 or l_long_axis < 1e-6:
-            return True
-        cos_ = np.dot(center_vec, long_axis.T) / (dist_center * l_long_axis)
-
-        if np.abs(cos_) > 0.1:
-            tan_square = 1 / (cos_ ** 2) - 1
-            d = np.sqrt((l_long_axis ** 2 * l_short_axis ** 2 * (1 + tan_square) /
-                         (l_short_axis ** 2 + l_long_axis ** 2 * tan_square)))
-        else:
-            d = l_short_axis
-
-        cross_pt = ob_vec + d * center_vec / dist_center
-
-        vec1 = self.goal_state[self.N - 1, :2] - cross_pt
-        vec2 = self.curr_state[:2] - cross_pt
-        theta = np.dot(vec1.T, vec2)
-
-        return theta > 0
-
-    def _build_nlp(self, use_dcbf=True):
-        N = self.N
-        T = 0.1
-        gamma_k = 0.3
-
-        v_max = 1.2
-        omega_max = 1.2
-
-        opti = ca.Opti()
-        p_x0 = opti.parameter(3)
-        p_vlb = opti.parameter(1)
-        p_goal = opti.parameter(N, 3)
-        p_obs = opti.parameter(self.MAX_OBS * N, 5)
-
-        X = opti.variable(N + 1, 3)
-        U = opti.variable(N, 2)
-        v = U[:, 0]
-        omega = U[:, 1]
-
-        def f(x_, u_):
-            return ca.vertcat(*[u_[0] * ca.cos(x_[2]), u_[0] * ca.sin(x_[2]), u_[1]])
-
-        opti.subject_to(X[0, :] == p_x0.T)
-        opti.subject_to(opti.bounded(p_vlb, v, v_max))
-        opti.subject_to(opti.bounded(-omega_max, omega, omega_max))
-
-        for i in range(N):
-            x_next = X[i, :] + T * f(X[i, :], U[i, :]).T
-            opti.subject_to(X[i + 1, :] == x_next)
-
-        for j in range(self.MAX_OBS):
-            for i in range(N - 1):
-                if use_dcbf:
-                    opti.subject_to(self._h(X[i + 1, :], p_obs[j * N + i + 1, :]) >=
-                                    (1 - gamma_k) * self._h(X[i, :], p_obs[j * N + i, :]))
-                else:
-                    # Euclidean keep-out baseline: the obstacle is treated as a
-                    # circle of radius max(a, b) plus the same safety margin.
-                    ob = p_obs[j * N + i + 1, :]
-                    dx = X[i + 1, 0] - ob[0]
-                    dy = X[i + 1, 1] - ob[1]
-                    radius = ca.fmax(ob[2], ob[3]) + 0.5
-                    opti.subject_to(dx * dx + dy * dy >= radius * radius)
-
-        R = np.diag([0.1, 0.02])
-        obj = 0
-        for i in range(N):
-            Q = np.diag([1.0 + 0.05 * i, 1.0 + 0.05 * i, 0.02 + 0.005 * i])
-            if i < N - 1:
-                obj += 0.1 * self._quadratic(X[i, :] - p_goal[i, :], Q) + \
-                    self._quadratic(U[i, :], R)
-            else:
-                obj += 0.1 * self._quadratic(X[i, :] - p_goal[i, :], Q)
-        Q = np.diag([1.0, 1.0, 0.02]) * 5
-        obj += self._quadratic(X[N - 1, :] - p_goal[N - 1, :], Q)
-
-        opti.minimize(obj)
-        opts_setting = {
-            'ipopt.max_iter': 2000,
-            'ipopt.print_level': 0,
-            'print_time': 0,
-            'ipopt.acceptable_tol': 1e-3,
-            'ipopt.acceptable_obj_change_tol': 1e-3,
-            # warm start from the previous plan, and never let a pathological
-            # instance block the 20 Hz loop for long
-            'ipopt.warm_start_init_point': 'yes',
-            'ipopt.max_cpu_time': 1.0,
-        }
-        opti.solver('ipopt', opts_setting)
-
-        return {'opti': opti, 'X': X, 'U': U, 'p_x0': p_x0,
-                'p_vlb': p_vlb, 'p_goal': p_goal, 'p_obs': p_obs}
-
     def MPC_ellip(self):
         self.curr_pose_lock.acquire()
         self.global_path_lock.acquire()
         self.obstacle_lock.acquire()
 
-        nlp = self._nlp
-        opti = nlp['opti']
+        opti = ca.Opti()
+        T = 0.1
+        gamma_k = 0.3
+
+        v_max = 1.2
+        v_min = 0.1
+        omega_max = 1.2
+
+        opt_x0 = opti.parameter(3)
+
+        opt_states = opti.variable(self.N + 1, 3)
+        opt_controls = opti.variable(self.N, 2)
+        v = opt_controls[:, 0]
+        omega = opt_controls[:, 1]
+
+        def f(x_, u_):
+            return ca.vertcat(*[u_[0] * ca.cos(x_[2]), u_[0] * ca.sin(x_[2]), u_[1]])
+
+        def exceed_ob(ob_):
+            l_long_axis = ob_[2]
+            l_short_axis = ob_[3]
+            long_axis = np.array([np.cos(ob_[4]) * l_long_axis, np.sin(ob_[4]) * l_long_axis])
+
+            ob_vec = np.array([ob_[0], ob_[1]])
+            center_vec = self.goal_state[self.N - 1, :2] - ob_vec
+            dist_center = np.linalg.norm(center_vec)
+            cos_ = np.dot(center_vec, long_axis.T) / (dist_center * l_long_axis)
+
+            if np.abs(cos_) > 0.1:
+                tan_square = 1 / (cos_ ** 2) - 1
+                d = np.sqrt((l_long_axis ** 2 * l_short_axis ** 2 * (1 + tan_square) /
+                             (l_short_axis ** 2 + l_long_axis ** 2 * tan_square)))
+            else:
+                d = l_short_axis
+
+            cross_pt = ob_vec + d * center_vec / dist_center
+
+            vec1 = self.goal_state[self.N - 1, :2] - cross_pt
+            vec2 = self.curr_state[:2] - cross_pt
+            theta = np.dot(vec1.T, vec2)
+
+            return theta > 0
+
+        def h(curpos_, ob_):
+            safe_dist = 0.5  # for jackal
+
+            c = ca.cos(ob_[4])
+            s = ca.sin(ob_[4])
+            a = ca.MX([ob_[2]])
+            b = ca.MX([ob_[3]])
+
+            ob_vec = ca.MX([ob_[0], ob_[1]])
+            center_vec = curpos_[:2] - ob_vec.T
+
+            dist = b * (ca.sqrt((c ** 2 / a ** 2 + s ** 2 / b ** 2) * center_vec[0] ** 2 +
+                                (s ** 2 / a ** 2 + c ** 2 / b ** 2) * center_vec[1] ** 2 +
+                                2 * c * s * (1 / a ** 2 - 1 / b ** 2) * center_vec[0] * center_vec[1]) - 1) - safe_dist
+
+            return dist
+
+        def quadratic(x, A):
+            return ca.mtimes([x, A, x.T])
+
+        opti.subject_to(opt_states[0, :] == opt_x0.T)
+
+        if (distance_global(self.curr_state, self.global_path[-1, :2]) > 1):
+            opti.subject_to(opti.bounded(v_min, v, v_max))
+        else:
+            opti.subject_to(opti.bounded(-v_min, v, v_max))
+
+        opti.subject_to(opti.bounded(-omega_max, omega, omega_max))
+
+        for i in range(self.N):
+            x_next = opt_states[i, :] + T * f(opt_states[i, :], opt_controls[i, :]).T
+            opti.subject_to(opt_states[i + 1, :] == x_next)
+
+        num_obs = int(len(self.ob) / self.N)
+
+        for j in range(num_obs):
+            if not exceed_ob(self.ob[25 * j]):
+                for i in range(self.N - 1):
+                    opti.subject_to(h(opt_states[i + 1, :], self.ob[j * 25 + i + 1]) >=
+                                    (1 - gamma_k) * h(opt_states[i, :], self.ob[j * 25 + i]))
+
+        obj = 0
+        R = np.diag([0.1, 0.02])
+        for i in range(self.N):
+            Q = np.diag([1.0 + 0.05 * i, 1.0 + 0.05 * i, 0.02 + 0.005 * i])
+            if i < self.N - 1:
+                obj += 0.1 * quadratic(opt_states[i, :] - self.goal_state[[i]], Q) + quadratic(opt_controls[i, :], R)
+            else:
+                obj += 0.1 * quadratic(opt_states[i, :] - self.goal_state[[i]], Q)
+        Q = np.diag([1.0, 1.0, 0.02]) * 5
+        obj += quadratic(opt_states[self.N - 1, :] - self.goal_state[[self.N - 1]], Q)
+
+        opti.minimize(obj)
+        opts_setting = {'ipopt.max_iter': 2000, 'ipopt.print_level': 0, 'print_time': 0,
+                        'ipopt.acceptable_tol': 1e-3, 'ipopt.acceptable_obj_change_tol': 1e-3}
+        opti.solver('ipopt', opts_setting)
+        opti.set_value(opt_x0, self.curr_state)
 
         try:
-            opti.set_value(nlp['p_x0'], self.curr_state)
-            opti.set_value(nlp['p_goal'], self.goal_state)
-
-            v_min = 0.1
-            if distance_global(self.curr_state, self.global_path[-1, :2]) > 1:
-                opti.set_value(nlp['p_vlb'], [v_min])
-            else:
-                opti.set_value(nlp['p_vlb'], [-v_min])
-
-            # obstacle slots: only the tracked ones are used, the others are
-            # parked far away so their D-CBF constraints are trivially met
-            obs_params = np.zeros((self.MAX_OBS * self.N, 5))
-            obs_params[:, 0] = self.OB_FAR
-            obs_params[:, 1] = self.OB_FAR
-            obs_params[:, 2] = 0.5
-            obs_params[:, 3] = 0.5
-            obs_params[:, 4] = 0.0
-            num_obs = min(self.MAX_OBS, int(len(self.ob) / self.N))
-            for j in range(num_obs):
-                if self._exceed_ob(self.ob[self.N * j]):
-                    continue
-                for i in range(self.N):
-                    # without prediction the current ellipse is held constant
-                    # over the whole horizon (the "no prediction" baselines)
-                    src = j * self.N + (i if self.use_prediction else 0)
-                    row = np.asarray(self.ob[src], dtype=float).ravel()
-                    a = max(abs(row[2]), 1e-3)
-                    b = max(abs(row[3]), 1e-3)
-                    obs_params[j * self.N + i, :] = [row[0], row[1], a, b, row[4]]
-            opti.set_value(nlp['p_obs'], obs_params)
-
-            opti.set_initial(nlp['X'], self.last_state)
-            opti.set_initial(nlp['U'], self.last_input)
-
-            t_start = time.perf_counter()
+            _solve_t0 = time.perf_counter()
             sol = opti.solve()
-            self.last_solve_time = time.perf_counter() - t_start
-            u_res = np.array(sol.value(nlp['U']))
-            state_res = np.array(sol.value(nlp['X']))
+            _solve_msg = Float32()
+            _solve_msg.data = float(time.perf_counter() - _solve_t0)
+            self.pub_solve_time.publish(_solve_msg)
+            u_res = np.array(sol.value(opt_controls))
+            state_res = np.array(sol.value(opt_states))
 
             self.last_input = u_res
             self.last_state = state_res
             self.mpc_success = True
-
-            solve_msg = Float32()
-            solve_msg.data = float(self.last_solve_time)
-            self.pub_solve_time.publish(solve_msg)
 
         except Exception:
             self.get_logger().error("Infeasible Solution", throttle_duration_sec=2.0)
@@ -489,7 +386,7 @@ class LocalPlanner(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = LocalPlanner()
-    executor = MultiThreadedExecutor()
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
         executor.spin()

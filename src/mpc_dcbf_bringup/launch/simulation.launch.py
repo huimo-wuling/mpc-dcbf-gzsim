@@ -31,7 +31,6 @@ def generate_launch_description():
 
     headless = LaunchConfiguration('headless')
     use_rviz = LaunchConfiguration('rviz')
-    variant = LaunchConfiguration('variant')
 
     set_resource_path = SetEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH',
@@ -89,8 +88,7 @@ def generate_launch_description():
 
     planner = Node(
         package='local_planner', executable='local_planner',
-        parameters=[{'replan_period': 0.05, 'use_sim_time': True,
-                     'variant': variant}], output='screen')
+        parameters=[{'replan_period': 0.05, 'use_sim_time': True}], output='screen')
 
     controller = Node(package='local_planner', executable='controller', output='screen')
 
@@ -104,8 +102,6 @@ def generate_launch_description():
                               description='Run only the Gazebo server (no GUI).'),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='Start RViz2.'),
-        DeclareLaunchArgument('variant', default_value='ours',
-                              description="Planner variant: ours | mpc | mpc_cbf | mpc_kf"),
         set_resource_path,
         gz_sim_headless,
         gz_sim_gui,
