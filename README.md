@@ -77,7 +77,8 @@ Control to Safety-Critical Obstacle-Avoidance of Mobile Robot》** 的官方代�
 
 详细的问题清单见 **[docs/port_notes.md](docs/port_notes.md)**，实验方法见
 **[docs/reproduction.md](docs/reproduction.md)**；**项目组成、运行步骤、需要的前置知识与
-代码阅读顺序见 [docs/guide.md](docs/guide.md)**。
+代码阅读顺序、编程/库知识（rclpy、rclcpp、CasADi、Eigen、PCL、grid_map、CGAL）与
+可照抄的改动示例见 [docs/guide.md](docs/guide.md)**。
 
 ---
 
@@ -289,7 +290,7 @@ mpc-dcbf-gzsim/
 ├── scripts/                  # 导入依赖、实验、记录、指标、对比
 ├── results/                  # 复现结果（图 + 指标 + 原始记录）
 ├── patches/                  # grid_map 的 ament 补丁
-├── docs/                     # 项目指南 + 移植笔记 + 复现说明
+├── docs/                     # 项目指南（含编程知识）+ 移植笔记 + 复现说明
 └── mpc_dcbf.repos
 ```
 

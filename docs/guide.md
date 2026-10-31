@@ -1,12 +1,14 @@
 # 项目指南（GUIDE）
 
-这份文档回答三个问题：
+这份文档回答四个问题：
 
 1. 这个仓库由什么组成，怎么把仿真实验跑起来；
 2. 跑它需要哪些**前置软件知识**；
-3. 要读懂里面的开源代码，需要补哪些**算法与工程知识**，以及按什么顺序读。
+3. 要读懂里面的开源代码，需要补哪些**算法与工程知识**，以及按什么顺序读；
+4. 读 / 改这份代码需要哪些**编程知识**（语言、库、消息约定、调试、动手示例）。
 
-> 面向两类读者：想"跑一遍看结果"的（第 2 章），和想"改它/读懂它"的（第 3、4、5 章）。
+> 面向三类读者：想"跑一遍看结果"的（第 2 章）；想"改参数/换场景"的（第 2.6 节）；
+> 想"读懂算法、动手改代码"的（第 3、4、5 章）。
 > 论文本身的公式与翻译见桌面上的《论文翻译与注释》，本仓库的移植细节见
 > [`port_notes.md`](port_notes.md)，实验方法与结果见 [`reproduction.md`](reproduction.md)。
 
@@ -314,18 +316,343 @@ IPOPT 的 `max_iter`/`acceptable_tol` 含义。
 
 ---
 
-## 5. 学习路线与时间估计
+## 5. 编程与代码知识（读 / 改这份代码需要的）
+
+这一章不讲算法，只讲**代码本身**：用了哪些库、每种语言在本项目里的固定写法、
+消息怎么打包、要改东西该动哪几行、编译和调试怎么做。
+
+### 5.1 语言与库清单
+
+| 语言 / 库 | 用在哪 | 用来干什么 | 需要掌握到什么程度 |
+|---|---|---|---|
+| Python 3 + `rclpy` | `local_planner`（规划器、控制器） | 节点、回调、定时器、CasADi 建模 | 能写"类继承 Node + 订阅 + 发布 + 定时器" |
+| `numpy` | 规划器 | 状态/代价矩阵、切片、`np.diag`、`np.argmin` | 数组形状与索引 |
+| `CasADi`（`casadi`） | 规划器 | 符号优化建模 + 调 IPOPT | `Opti` 的五个 API 就够（见 5.2.5） |
+| `threading` | 规划器 | 保护跨回调共享的状态 | `Lock` 的 acquire/release 与 `finally` |
+| C++17 + `rclcpp` | `local_map`、`obs_param`、`mpc_scene`、`global_path_publisher` | 高频处理点云/滤波/预测 | 能读懂类、lambda、智能指针、模板调用 |
+| `Eigen` | `obs_param`、`local_map` | 矩阵/向量/位姿运算 | 会写 `MatrixXf`、`Vector3d`、`Isometry3d` |
+| `PCL` | `local_map` | 点云滤波、坐标变换、消息转换 | 三个滤波器的调用顺序 |
+| `grid_map` | `local_map` | 2.5D 高程栅格 | 建立地图、写/读层、取世界坐标 |
+| `CGAL` | `local_map` | 最小包围椭圆 | 会调用 `Min_ellipse_2` |
+| `tf2` | `mpc_scene`、`local_map`、`controller` | 坐标变换查询与广播 | `lookupTransform` / `TransformBroadcaster` |
+| `ros_gz_bridge` | `mpc_dcbf_bringup/config/bridge.yaml` | gz ↔ ROS 话题/类型映射 | YAML 五个字段的含义 |
+| CMake + `ament_cmake` + `colcon` | 所有 C++ 包 | 构建 | 看得懂 `find_package` / `target_link_libraries` |
+
+### 5.2 Python 侧（`src/local_planner/local_planner/`）
+
+#### 5.2.1 一个 rclpy 节点的固定骨架
+
+```python
+class Controller(Node):
+    def __init__(self):
+        super().__init__('control')                       # ① 节点名
+        self.N = 10
+        self.local_plan_sub = self.create_subscription(   # ② 订阅
+            Float32MultiArray, '/local_plan', self.local_planner_cb, 10)
+        self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)   # ③ 发布
+        self.timer_localization = self.create_timer(0.01, self.get_current_state)  # ④ 定时器
+        self.control_timer = self.create_timer(0.02, self.control_loop_tick)       # 50 Hz
+```
+
+四件事：`super().__init__` 给出节点名 → `create_subscription` / `create_publisher` 声明接口 →
+`create_timer` 给周期 → 回调函数里干活。所有节点的结构都是这四段的排列组合。
+
+#### 5.2.2 参数
+
+```python
+self.declare_parameter('replan_period', 0.05)              # 声明 + 默认值
+self.replan_period = self.get_parameter('replan_period').value   # 取出来存成员
+```
+
+launch 里传参就是覆盖默认值：`parameters=[{'replan_period': 0.05, 'use_sim_time': True}]`。
+**注意**：`use_sim_time` 是 ROS 2 内置参数，设成 `True` 后 `create_timer` 用的是仿真时间。
+
+#### 5.2.3 执行器与回调组（本项目踩过的坑）
+
+```python
+executor = SingleThreadedExecutor()   # 串行执行所有回调
+executor.add_node(node); executor.spin()
+```
+
+* `rclpy.spin(node)` = 单线程执行器；`MultiThreadedExecutor` 会让不同回调**并发**执行。
+* 本项目的 MPC 单次求解 ≈20 ms，用多线程执行器时会被订阅回调抢 GIL，实测从 0.03 s 恶化到
+  几十秒（详见 `port_notes.md` 2.5）。所以规划器用单线程执行器。
+* `ReentrantCallbackGroup` / `MutuallyExclusiveCallbackGroup` 决定"同一组内的回调能否并发"。
+  只有当你确实需要"求解时仍更新订阅"才用 reentrant。
+
+#### 5.2.4 numpy 惯用法（本仓库出现的写法）
+
+```python
+self.local_plan = np.zeros([self.N, 2])        # 二维数组，[步数, (v, ω)]
+self.local_plan[i, 0] = msg.data[2 * i]        # 行、列索引
+Q = np.diag([1.0, 1.0, 0.02])                  # 对角矩阵
+num = np.argmin(np.array([...]))               # 取最小值的下标
+state_sol[i, 0]                                # 第 i 步的 x
+```
+
+**类型陷阱（必看）**：ROS 2 新的 rosidl 在把 Python 对象转成消息字段时用
+`PyFloat_Check` / `PyBool_Check` 断言：
+
+```python
+cmd_move.data = distance > 0.1        # ✗ numpy.bool_ → 断言失败，进程直接 abort
+cmd_move.data = bool(distance > 0.1)  # ✓
+pose.orientation.x = 0                # ✗ Python int → 断言失败
+pose.orientation.x = 0.0              # ✓
+pt.x = float(state_sol[i, 0])         # ✓ 显式转 float 最稳妥
+```
+
+`np.float64` 是 `float` 的子类所以通常没事，但 `np.float32`、`np.bool_`、Python `int`
+都会触发断言——这类崩溃没有 Python traceback，只有一行 C 断言，非常难查。
+
+#### 5.2.5 CasADi 的编程模型（读 `MPC_ellip()` 的关键）
+
+CasADi 里所有的量都先当**符号**写进一个优化问题，再交给求解器：
+
+```python
+opti = ca.Opti()                              # 一个空问题
+opt_x0   = opti.parameter(3)                  # 参数：每次求解前用 set_value 填
+opt_U    = opti.variable(N, 2)                # 决策变量：求解器来定
+opti.subject_to(opti.bounded(0.1, opt_U[:, 0], 1.2))     # 约束
+opti.minimize(ca.mtimes([x, Q, x.T]))                     # 目标
+opti.solver('ipopt', {'ipopt.print_level': 0})            # 选求解器
+opti.set_value(opt_x0, self.curr_state)                   # 填参数（数值）
+sol = opti.solve()                                        # 求解
+u = np.array(sol.value(opt_U))                            # 取数值解
+```
+
+对应到本仓库：`opt_x0` ← `/curr_state`，`opt_U` = 25 步的 `(v, ω)`，约束是差速动力学 +
+输入界 + D-CBF，目标见 4.2 节。**读代码时把 `opt_states/opt_controls` 当成未知矩阵**即可。
+
+`opti.solver()` 每次调用都会**重新构建**一份 NLP 并交给 IPOPT，所以上游是"每个控制周期
+重建一次"，单次 ≈20–30 ms——这是它能跑到 18 Hz 的原因，也是为什么它不能被多个回调并发调用。
+
+#### 5.2.6 锁
+
+规划器里三个锁分别保护 `/curr_state`、`/global_path`、`/obs_predict_pub` 写入的缓存：
+
+```python
+self.curr_pose_lock.acquire()
+try:
+    ...读 self.curr_state...
+finally:
+    self.curr_pose_lock.release()     # 必须放 finally，否则异常后永久死锁
+```
+
+### 5.3 C++ 侧（`local_map` / `obs_param` / `mpc_scene`）
+
+#### 5.3.1 一个 rclcpp 节点的骨架
+
+```cpp
+class LocalMapPub : public rclcpp::Node {
+public:
+  LocalMapPub() : Node("local_map_pub") {
+    obs_height = declare_parameter<float>("obs_height", 0.4F);        // 参数
+    for_obs_track_pub_ = create_publisher<std_msgs::msg::Float32MultiArray>(
+        "/local_map_pub/for_obs_track", 1);                           // 发布
+    velodyne_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+        "/velodyne_points", 1,
+        [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {   // lambda 回调
+          pcl::fromROSMsg(*msg, velodyne_cloud_);
+        });
+    loop_timer_ = create_wall_timer(std::chrono::milliseconds(91),     // 11 Hz 主循环
+        std::bind(&LocalMapPub::mainLoop, this));
+  }
+};
+```
+
+要点：① 用 `declare_parameter<T>` 而不是 `nh.param`；② 回调里**只做拷贝/缓存**，重活放定时器；
+③ `std::bind(&类::方法, this)` 或 `[this](...){}` 两种绑定方式本项目都有；④ 节点必须
+`rclcpp::spin(std::make_shared<LocalMapPub>())` 才会开始收消息。
+
+#### 5.3.2 指针与所有权
+
+* `std::unique_ptr<T>`：独占，`tf_buffer_ = std::make_unique<tf2_ros::Buffer>(...)`；
+* `std::shared_ptr<T>`：共享，消息回调收到的是 `Msg::SharedPtr`；
+* PCL 的 `cloud.makeShared()`：把栈上的 `pcl::PointCloud` 包成 `Ptr` 交给滤波器——
+  因为 PCL 的 `setInputCloud` 只收 `Ptr`。
+
+#### 5.3.3 Eigen 常用写法（`local_map` 里到处都是）
+
+```cpp
+Eigen::Vector3d pos;
+localmap_obs.getPosition3("elevation", pt, pos);        // 栅格索引 → 世界坐标
+robot_position2d_ << tf.translation().x(), tf.translation().y();   // 逗号初始化
+Eigen::Isometry3d lidar_tf_ = tf2::transformToEigen(lookupTransform(...));
+pcl::transformPointCloud(in, out, lidar_tf_.cast<float>());        // double → float
+```
+
+#### 5.3.4 PCL 四步
+
+```cpp
+pcl::fromROSMsg(*msg, cloud);                 // ROS 消息 → 点云
+pass_x_.setInputCloud(cloud.makeShared());    // 裁剪
+pass_x_.filter(cloud);
+sor_.filter(filtered);                        // VoxelGrid 降采样
+pcl::toROSMsg(cloud, out_msg);                // 点云 → ROS 消息
+```
+
+#### 5.3.5 grid_map 与 CGAL
+
+```cpp
+map_.setGeometry(Length(14.0, 14.0), 0.1);    // 尺寸 + 分辨率
+map_.add("elevation", matrix);                 // 写一层
+auto m = map_.get("local_lidar");              // 读一层（矩阵）
+```
+
+```cpp
+Min_ellipse me(pts.begin(), pts.end(), true);  // 点集 → 最小包围椭圆
+me.ellipse().double_coefficients(r, s, t, u, v, w);  // 二次曲线系数
+// 再由系数解出半轴 a,b、中心 cx,cy、旋转角 theta（ellipse.hpp 里那段公式）
+```
+
+CGAL 对**共线点**会返回退化椭圆（`is_degenerate()`），所以代码里有 fallback 分支。
+
+#### 5.3.6 编译期常识
+
+* 头文件里定义**函数/全局变量**会被多个 `.cpp` 包含 → 重复定义（ODR）。本项目 `ellipse.hpp`
+  就是这么写的（上游如此，里面还有 `float localmap_x_size;` 这些全局量），所以只能有一个
+  `.cpp` 包含它——目前正是 `local_map_pub.cpp`（它再包含 `KM.hpp`）；
+* `const&` 传参避免拷贝（点云/矩阵很大）；
+* 日志用 `RCLCPP_INFO(get_logger(), "...")`、`RCLCPP_WARN`，不要用 `printf`（`printf` 也能出来，但
+  不会进 ROS 日志系统）；
+* 头文件里 `#include <eigen3/Eigen/Eigen>`（本机 Eigen 装在 `eigen3/` 子目录下）。
+
+### 5.4 消息打包约定（改代码前必须知道）
+
+| 话题 | 类型 | 布局 |
+|---|---|---|
+| `/local_map_pub/for_obs_track` | `Float32MultiArray` | 每 **7** 个一组：`cx, cy, a, b, theta, label, variance` |
+| `/obs_predict_pub` | `Float32MultiArray` | 每个障碍 **25 步 × 5** 个数：`cx, cy, a, b, theta` |
+| `/local_plan` | `Float32MultiArray` | 每步 **2** 个：`v, ω`，共 N=25 步 |
+| `/curr_state` | `Float32MultiArray` | `[x, y, yaw]` |
+| `/obstacles/true_poses` | `Float32MultiArray` | 每障碍 2 个：`x, y`（评估用） |
+
+所有话题名都是**硬编码字符串**，改名要全局搜索：`grep -rn "'/local_plan'\|\"/local_plan\"" src/`。
+
+### 5.5 三个可以照抄的最小改法
+
+**例 1：给 MPC 加一条走廊约束（`|y| ≤ 5`）**
+
+在 `local_planner.py` 的 `MPC_ellip()` 里，动力学约束那段循环之后加：
+
+```python
+        for i in range(self.N):
+            x_next = ... # 原有动力学
+        # 新增：横向走廊约束
+        opti.subject_to(opti.bounded(-5.0, opt_states[:, 1], 5.0))
+```
+
+**例 2：把安全距离做成参数**
+
+```python
+# __init__ 里
+self.declare_parameter('safe_dist', 0.5)
+self.safe_dist = self.get_parameter('safe_dist').value
+
+# h() 里把常量替换成
+safe_dist = self.safe_dist
+```
+
+然后 `ros2 launch ... --ros-args -p safe_dist:=0.8`，或在 launch 的 `planner` 节点
+`parameters` 里加 `{'safe_dist': 0.8}`。
+
+**例 3：新增一个订阅 `/local_plan` 的调试节点**
+
+```python
+# src/local_planner/local_planner/plan_logger.py
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
+
+class PlanLogger(Node):
+    def __init__(self):
+        super().__init__('plan_logger')
+        self.create_subscription(Float32MultiArray, '/local_plan', self.cb, 10)
+
+    def cb(self, msg):
+        v, w = msg.data[0], msg.data[1]
+        self.get_logger().info('v=%.2f w=%.2f' % (v, w))
+
+def main():
+    rclpy.init(); rclpy.spin(PlanLogger()); rclpy.shutdown()
+```
+
+再在 `src/local_planner/setup.py` 的 `console_scripts` 里加一行：
+
+```python
+'plan_logger = local_planner.plan_logger:main',
+```
+
+`colcon build --symlink-install --packages-select local_planner` 之后
+`ros2 run local_planner plan_logger` 即可（`--symlink-install` 下新增 Python 文件也需要重新
+install 一次，因为 `console_scripts` 是在安装阶段生成的）。
+
+### 5.6 构建与调试的代码级知识
+
+**colcon 的目录语义**
+
+| 目录 | 内容 | 说明 |
+|---|---|---|
+| `src/` | 源码 | 你的改动都在这里 |
+| `build/<包>/` | CMake 中间产物、Python 包的拷贝 | 报错信息里的路径常在这里 |
+| `install/<包>/` | 安装结果 | `--symlink-install` 下多为符号链接指向 `build/` 或 `src/` |
+| `log/` | 每次构建的日志 | `log/latest_build/<包>/stdout_stderr.log` |
+
+改 Python/launch/YAML/SDF → 不用重编译；改 C++ → `colcon build --symlink-install --packages-select local_map`。
+
+**读编译错误**
+
+| 报错 | 含义 | 处理 |
+|---|---|---|
+| `Could not find a package configuration file provided by "Eigen3"` | 缺依赖 | `apt install libeigen3-dev` 或在 `package.xml` 加 `<depend>` |
+| `undefined reference to ...` | 链接时缺库 | `CMakeLists.txt` 的 `target_link_libraries` |
+| `ament_target_dependencies` 未定义 | 新版 ament 移除 | 见 `patches/grid_map_ros_ament_target_deps.patch` |
+| `fatal error: grid_map_core/GridMap.hpp: No such file` | 没 source 工作空间 | `source install/setup.bash` |
+
+**调试**
+
+| 手段 | 命令 | 适用 |
+|---|---|---|
+| 话题频率/内容 | `ros2 topic hz /local_plan`、`ros2 topic echo /curr_state` | 任何"没反应" |
+| QoS/连接关系 | `ros2 topic info /cmd_vel -v` | 有话题但收不到 |
+| TF | `ros2 run tf2_ros tf2_echo world base_link` | 位姿相关 |
+| Python 断点 | `python3 -m pdb`，或临时 `print(..., flush=True)` | 规划器逻辑 |
+| 看 Python 卡在哪 | `py-spy dump --pid <pid>`（`pip install --user py-spy`；若报 Permission Denied 需 `sudo` 或放开 `kernel.yama.ptrace_scope`） | 卡死/极慢 |
+| C++ 日志 | 代码里加 `RCLCPP_INFO(get_logger(), "x=%.2f", x)` | 中间量 |
+| 录包复现 | `ros2 bag record /velodyne_points /local_plan /cmd_vel` | 复现偶发问题 |
+| 进程残留 | `ps -eo cmd \| grep gz`、`bash scripts/stop.sh` | Gazebo 的日常 |
+
+### 5.7 自测清单
+
+能回答下面这些，读改本项目基本没有障碍：
+
+1. 一个 rclpy 节点要成为节点，最少要写哪几行？`spin` 是谁调用的？
+2. `create_subscription(类型, 话题, 回调, 10)` 里的 10 是什么？
+3. 为什么 `cmd_move.data = a > b` 会让进程直接退出（没有 traceback）？
+4. `ReentrantCallbackGroup` 和 `MutuallyExclusiveCallbackGroup` 的区别？本项目为什么用单线程执行器？
+5. CasADi 里 `opti.parameter` 和 `opti.variable` 的区别？`set_value` 什么时候调用？
+6. `sol.value(opt_controls)` 返回的是什么类型？为什么后面要 `np.array(...)`？
+7. 为什么 `--symlink-install` 下改 Python 不用重编译，但新增 `console_scripts` 要重新 build？
+8. `install/` 里的文件为什么是符号链接？对调试有什么好处？
+9. `/obs_predict_pub` 里 500 个数怎么解读成一个障碍的 25 步预测？
+10. `pcl::PointCloud::makeShared()` 为什么必要？
+11. `Eigen::Isometry3d` 与 `Eigen::Matrix4f` 的关系？`cast<float>()` 在做什么？
+12. 如果 `ros2 topic hz /local_plan` 有 18 Hz，但车不动，下一步查什么？
+
+## 6. 学习路线与时间估计
 
 | 目标 | 需要补 | 预计 |
 |---|---|---|
 | 把仿真跑起来看到车动 | 第 3 章 1、2 条 | 1–2 小时（含装依赖） |
 | 会调参数、换场景、跑出指标图 | 第 3 章 2、3 条 + 第 2.6 节 | 半天 |
+| 看懂并小改 Python 节点（规划器/控制器） | 第 5.2、5.4、5.5 节 + 例 1/2 | 1 天 |
+| 看懂并小改 C++ 节点（local_map/obs_param） | 第 5.3、5.6 节 | 3–5 天 |
 | 讲清楚算法在做什么 | 第 4 章 4.1–4.4 | 2–3 天（配合论文） |
 | 能改算法（换约束、换预测、加障碍） | 第 4 章全部 | 1–2 周 |
 
 ---
 
-## 6. 术语表
+## 7. 术语表
 
 | 中文 | 英文 / 记号 | 一句话 |
 |---|---|---|
@@ -339,6 +666,11 @@ IPOPT 的 `max_iter`/`acceptable_tol` 含义。
 | 差速驱动 | differential drive | 靠左右轮速差转向的底盘 |
 | 体素降采样 | VoxelGrid | 把空间切成小立方体，每格只留一个点 |
 | 二分图匹配 | Hungarian | 给两帧的椭圆做一一配对（跟踪） |
+| 回调组 | callback group | 决定同一节点内回调能否并发执行 |
+| 执行器 | executor | 决定由几个线程/以什么顺序派发回调 |
+| 服务质量 | QoS | 可靠性/持久性/队列深度，收发两端必须兼容 |
+| 符号变量 | symbolic variable | CasADi 里代表未知数的占位符，求解后才有数值 |
+| 符号安装 | symlink install | `colcon --symlink-install`，源码直接以符号链接进 install |
 
 ---
 
