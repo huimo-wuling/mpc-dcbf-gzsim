@@ -143,7 +143,37 @@ bash scripts/stop.sh
 > * `jackal_tf.urdf` 增加了车体/轮子/雷达的几何，仅用于 `RobotModel` 显示，
 >   物理与感知仍来自 `jackal.sdf`。
 
-### 5.3 启动参数
+### 5.3 RViz 是干什么用的
+
+RViz2 只是**可视化/调试工具，不参与控制**：算法节点之间只通过 ROS 话题通信，RViz 只是订阅这些
+话题把中间结果画出来。所以：
+
+* 关掉 RViz（`rviz:=false`）不影响算法；本仓库的复现脚本都是无头运行，指标与 RViz 无关。
+  原作者把 RViz 写成了 `required="true"`（关掉它整个 launch 会退出），那是他们"看演示"的习惯。
+* 它的价值是**一眼看出链路哪一级坏了**——这是调这套算法最省时间的手段。
+
+| RViz 显示 | 订阅的话题 | 对应处理阶段 | 用处 |
+|---|---|---|---|
+| `Velodyne` | `/velodyne_points` | 传感器原始输出 | 确认 LiDAR 在出数、量程/线数正常 |
+| `LocalPCD` | `/local_map_pub/local_pcd` | 点云裁剪+体素滤波+转到世界系 | 确认 TF 正确、点云落在障碍物上 |
+| GridMap | `/local_map_pub/gridmap` | 2.5D 高程图 + Sobel/Laplace/台阶判定 | 看"哪些格子被判成障碍"（原作者的配置有；本仓库未编译该 RViz 插件） |
+| `Fit_Ellipse` | `/local_map_pub/ellipse_vis` | DBSCAN 聚类 + 最小包围椭圆 + 匈牙利跟踪 | 检测结果、编号、颜色=不确定性（对应论文 Fig. 4(c)） |
+| `Predict_Ellipse` | `/obs_predict_vis_pub` | 卡尔曼滤波 25 步外推 | 预测轨迹是否贴着真实障碍（论文 Fig. 4(d)） |
+| `GlobalPath` | `/global_path` | 全局参考路径（190 个路点） | 机器人该沿哪走 |
+| `LocalPath`/`LocalPath_Vis` | `/local_path`、`/pub_path_vis` | MPC-D-CBF 输出 | 规划是否合理、车体外框会不会蹭到 |
+| `RobotModel` + TF | `/robot_description`、`/tf` | 位姿与坐标系 | 车在哪、朝向、雷达安装高度 |
+
+排障对照（现象 → 结论）：
+
+| 现象 | 结论 |
+|---|---|
+| 一条椭圆都没有 | 感知层：点云没进来 / DBSCAN 参数 / `local_map` 的话题或参数 |
+| 有椭圆但没有青色局部轨迹 | 规划层：MPC 无解（`Infeasible Solution`）或 `/obs_predict_pub` 没数据 |
+| 有青线、Gazebo 里车不动 | 执行层：`/cmd_vel` 没到差速控制器 |
+| Gazebo 里车在动、RViz 里不动 | 定位层：`/tf`（`odom_tf`）没发布或 fixed frame 不存在 |
+| 点云只有一帧/不刷新 | 时间戳或 QoS：`use_sim_time`、`/clock`、点云被 TF 过滤器丢掉 |
+
+### 5.4 启动参数
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -163,7 +193,7 @@ bash scripts/stop.sh
 主要频率：`/velodyne_points` 10 Hz → 局部地图 11 Hz → KF 预测 ~11 Hz →
 重规划 20 Hz（实测 18–19 Hz）→ 控制器 50 Hz。
 
-### 5.4 常见问题
+### 5.5 常见问题
 
 | 现象 | 原因 / 处理 |
 |---|---|
