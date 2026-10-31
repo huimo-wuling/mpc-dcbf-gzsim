@@ -31,8 +31,9 @@ Control to Safety-Critical Obstacle-Avoidance of Mobile Robot》** 的官方代�
    [`docs/port_notes.md`](docs/port_notes.md)），现在：
    * 一条命令启动 `gz sim` 场景 + Jackal + 动态障碍物 + 局部地图 + KF 预测 + MPC-D-CBF + RViz；
    * 规划器 **18–19 Hz**，MPC 单次求解 **≈19 ms**（p95 ≈ 22–42 ms）；
-   * 机器人从 (-10, 0) 出发、绕开横穿的圆柱并在 **22–23 s** 内停在终点 (9, 0)（误差 0.10 m）；
-     三次重复的最小间距为 **0.439 / 0.533 / 0.527 m**，全程无碰撞；
+   * 机器人从 (-10, 0) 出发驶向终点 (9, 0)（误差 0.10 m），用时 22.6–26.6 s；
+     三次重复的最小间距为 **0.529 / 0.072 / -0.204 m**——**有两次与横穿的移动圆柱发生接触**，
+     原因已定位（KF 对横穿圆柱的预测漂移 ≈0.85 m，上游问题，按要求未修改，见第 6 节）；
    * **只复现论文的方法本身**，不含论文的 4 个对比基线（其代码未开源，见第 6 节）。
 
 ---
@@ -100,17 +101,54 @@ cd ~/mpc-dcbf-gzsim
 bash scripts/import_repos.sh              # 拉取 grid_map(ros2) + filters，并打补丁
 colcon build --symlink-install
 source install/setup.bash
-
-# 图形界面（Gazebo + RViz）
-ros2 launch mpc_dcbf_bringup simulation.launch.py
-# 只跑 Gazebo 服务端 + RViz
-ros2 launch mpc_dcbf_bringup simulation.launch.py headless:=true
-# 纯无头（CI / 服务器）
-ros2 launch mpc_dcbf_bringup simulation.launch.py headless:=true rviz:=false
 ```
 
-RViz 里能看到：黄色全局路径、机器人局部规划、点云/局部栅格、检测出的椭圆（蓝→红表示
-不确定性大小）、KF 预测的未来椭圆（绿色），与作者演示视频一致。
+### 5.1 启动 / 停止（推荐用脚本，可反复启动）
+
+```bash
+# 启动前会自动清理上一次残留的 Gazebo 进程，因此可以反复运行
+bash scripts/start.sh                                # Gazebo GUI + RViz
+bash scripts/start.sh headless:=true                 # 只开 Gazebo 服务端 + RViz
+bash scripts/start.sh headless:=true rviz:=false     # 纯无头
+
+# 结束：终端 Ctrl+C；若进程没退干净（或直接关了 Gazebo 窗口），再执行
+bash scripts/stop.sh
+```
+
+> ⚠️ **为什么需要 `stop.sh`**：Gazebo Sim 的服务端（`gz-sim-main`）经常在一次
+> `Ctrl+C` 之后仍然存活，**直接点 Gazebo 窗口的 × 只会关掉 GUI 客户端、服务端继续跑**。
+> 这样第二次启动就会报
+> `Another world of the same name is running`，看起来像"只能复现一次"。
+> `scripts/start.sh` 已内置清理；等价的手动命令是：
+> ```bash
+> pkill -INT -f "gz sim"; pkill -INT -f gz-sim-gui-client; pkill -INT -f "ros2 launch mpc_dcbf_bringup"
+> ```
+
+### 5.2 RViz 里应该看到什么
+
+| 显示项 | 内容 |
+|---|---|
+| Yellow `GlobalPath` | 从 (-10, 0) 到 (9, 0) 的 190 个路点参考线 |
+| Cyan `LocalPath` / `LocalPathVis` | 规划器输出、带车体外框的局部轨迹 |
+| `RobotModel` | Jackal 车体 + 四轮 + 激光雷达（几何与 Gazebo 中的 SDF 一致） |
+| `LidarPoints` / `LocalPoints` | 原始点云（灰）/ 转到世界系的局部点云（橙） |
+| `ObservedObstacles` | 检测出的最小包围椭圆（蓝→红表示不确定性增大）+ 编号 |
+| `PredictedObstacles` | KF 预测的未来椭圆（绿色），每 5 步画一个截面 |
+
+`Grid`/`TF` 默认关闭/弱化以免干扰；需要检查坐标系时在左侧面板勾选 `TF` 即可。
+
+> 可视化说明（仅影响显示，不影响算法与数据）：
+> * `obs_kf` 的预测可视化按 5 步抽样（否则每帧 100+ 个圆柱叠在一起完全看不清），
+>   `/obs_predict_pub` 里仍然是完整的 25 步。
+> * `jackal_tf.urdf` 增加了车体/轮子/雷达的几何，仅用于 `RobotModel` 显示，
+>   物理与感知仍来自 `jackal.sdf`。
+
+### 5.3 启动参数
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `headless` | `false` | `true` 时不启动 Gazebo GUI（只跑服务端） |
+| `rviz` | `true` | 是否启动 RViz2 |
 
 ### 数据流（与原实现一致）
 
@@ -123,7 +161,20 @@ RViz 里能看到：黄色全局路径、机器人局部规划、点云/局部�
 ```
 
 主要频率：`/velodyne_points` 10 Hz → 局部地图 11 Hz → KF 预测 ~11 Hz →
-重规划 20 Hz（实际约 10 Hz，受求解耗时限制）→ 控制器 50 Hz。
+重规划 20 Hz（实测 18–19 Hz）→ 控制器 50 Hz。
+
+### 5.4 常见问题
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| 第二次启动报 `Another world of the same name is running` | 上一次的 Gazebo 服务端没退干净 → `bash scripts/stop.sh`，或直接用 `bash scripts/start.sh`（会自动清理） |
+| RViz 里看不到机器人 | `RobotModel` 显示被关闭，或 `/robot_description` 没发布（检查 `robot_state_publisher` 是否在跑） |
+| RViz 里没有黄线全局路径 | `/global_path` 的 QoS 不匹配（旧配置为 Transient Local）；本仓库配置已改为 Volatile |
+| RViz 里绿椭圆糊成一片 | `PredictedObstacles` 显示的是 25 步预测；可取消勾选该显示，或只看 `ObservedObstacles` |
+| 点云不动 / 只有一帧 | `Use sim time` 未开或 `/clock` 未桥接；RViz 启动时可能丢掉第一帧（timestamp 0），稍等即可 |
+| 规划器启动即 segfault | 用了 apt 的 `python3-casadi`（与 numpy 2.x ABI 不兼容）→ `pip3 install --user --break-system-packages casadi==3.8.1` |
+| `colcon build` 找不到 CGAL | `sudo apt install -y libcgal-dev` |
+| 找不到 `grid_map_*` | 先 `bash scripts/import_repos.sh` 再编译 |
 
 ## 6. 复现论文结果
 
@@ -141,9 +192,9 @@ bash scripts/run_repeats.sh 3 60
 
 | 运行 | Min dist [m] | Cons time [s] | Reac time [s] | Speed var | 重规划 [Hz] | 求解均值 [ms] | 路径 [m] |
 |---|---|---|---|---|---|---|---|
-| #1 | 0.439 | 22.83 | 7.51 | 0.104 | 17.9 | 19.3 | 19.10 |
-| #2 | 0.533 | 22.27 | 3.90 | 0.102 | 18.7 | 18.9 | 19.21 |
-| #3 | 0.527 | 23.19 | 2.61 | 0.005 | 18.2 | 20.3 | 19.51 |
+| #1 | 0.529 | 22.59 | 3.96 | 0.112 | 18.2 | 20.1 | 19.39 |
+| #2 | 0.072 | 26.63 | 3.94 | 0.156 | 17.2 | 21.0 | 20.24 |
+| #3 | **-0.204** | 24.19 | 3.95 | 0.137 | 18.2 | 19.7 | 19.89 |
 
 论文 Table I（Ours）：Min dist **0.828 m**、Cons time **21.52 s**、Reac time **0.353 s**、
 Speed var **0.0172**。
@@ -158,22 +209,24 @@ Speed var **0.0172**。
 
 * 整条链路（LiDAR → 局部高程图 → DBSCAN → MBE → 匈牙利跟踪 → KF 25 步椭圆预测 →
   D-CBF/MPC → 差速底盘）与上游实现逐行对应，参数、话题、频率、算法常数均未改动。
-* 到点耗时 22.3–23.2 s，与论文 21.52 s 同一量级；路径长度 19.1–19.5 m（直线 19 m），
-  说明避障动作幅度与论文相当。
-* 实时性：求解 18.9–20.3 ms、重规划 17.9–18.7 Hz，高于论文报告的 10 Hz。
-* 三次运行全程无碰撞，最小间距稳定在 0.44–0.53 m。
+* 到点耗时 22.6–26.6 s，比论文 21.52 s 慢 5–24%；路径长度 19.4–20.2 m（直线 19 m），
+  避障动作幅度与论文相当。
+* 实时性：求解 19.7–21.0 ms、重规划 17.2–18.2 Hz，高于论文报告的 10 Hz。
 * 障碍物检测/预测链路正常：`/local_map_pub/for_obs_track` 稳定输出椭圆，
   `/obs_predict_pub` 以 ~10.7 Hz 发布 25 步预测。
 
 **不一致的部分（如实记录，未做调参美化）**
 
-* **最小间距略小于 0.828 m**：三次为 0.439 / 0.533 / 0.527 m，差距 0.3 m 量级。原因是
-  CBF 约束作用在 10 Hz 更新、带不确定性膨胀的*估计*椭圆上，两次更新之间的预测会滞后；
-  另外障碍物判定用的是质点到椭圆边界的距离（`h()` 里机器人按质点处理，不含 0.42×0.31 m
-  的车体外廓），所以"中心到圆柱表面"的真实间距会比设计值 `d_safe = 0.5 m` 更小。
-* **速度方差**：0.104 / 0.102 / 0.005，波动较大；后两次的差距来自障碍物穿越时刻不同
-  （#3 的横穿没有真正压在速度上）。论文 0.0172 处于本机结果的低端。原因是本移植沿用
-  原实现的椭圆膨胀 `a ← a + pos_conf + ab_conf`，膨胀量偏大、CBF 约束更早生效。
+* **最小间距明显低于论文的 0.828 m，且有两次接触**（0.529 / 0.072 / -0.204 m）。
+  逐帧排查（`results/run_r2.json`、`run_r3.json`）：两次最差点都发生在 t ≈ 12.8 s，
+  对象都是沿 x 方向以 0.7 m/s 横穿的 `cylinder_4`。以 #3 为例，真实圆柱在 (-0.92, -0.80)，
+  而 KF 在同一时刻给出的椭圆在 (-0.21, -0.10) —— **横向偏了 0.85 m**。原因是上游 KF 用
+  匀加速模型外推 25 步（2.5 s），测量噪声带来的横向速度误差在长时域上被放大；CBF 于是
+  约束在一个"错位"的椭圆上，机器人按计划穿过了圆柱的真实位置。
+  这是**上游预测环节的定标问题**（Q/R、CA 模型、膨胀方式都来自原实现），按要求未做修改。
+* **速度方差**：0.112 / 0.156 / 0.137，为论文 0.0172 的 6–9 倍。原因同样是椭圆不确定性
+  膨胀 `a ← a + pos_conf + ab_conf` 偏大，CBF 约束更早、更紧地生效，速度在 0.1–1.2 m/s 间
+  反复调节。
 * **范围**：论文 Table I 的 4 个对比基线代码未随论文开源，本仓库只复现论文方法本身，
   不自行实现替代基线，因此本仓库不含任何方法间对比。
 

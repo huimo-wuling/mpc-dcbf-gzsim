@@ -152,7 +152,27 @@ pip3 install --user --break-system-packages casadi==3.8.1
   （唯一例外：移植版把这两个字段显式置 0，否则行为不可复现）。
 * MPC 每个周期重新构建 CasADi 问题（原实现如此，实测 0.03 s/周期，不需要优化）。
 
-### 2.10 其它
+### 2.10 可视化与"只能跑一次"的两个使用问题
+
+这两条**不影响算法**，但直接影响能不能反复做实验：
+
+* **RViz 看起来一团乱**：
+  * `simulation.rviz` 里 `/global_path` 的 Durability 写成 `Transient Local`，而发布者是
+    volatile → QoS 不兼容，**黄线全局路径永远不显示**（RViz 日志：
+    `offering incompatible QoS ... DURABILITY_QOS_POLICY`）。已改成 `Volatile`。
+  * 配置里原本**没有 `RobotModel`**，而 `jackal_tf.urdf` 只有 `<link>` 没有几何体 →
+    RViz 里看不到机器人。现在 URDF 增加了与 `model.sdf` 一致的车体/四轮/雷达几何，
+    并加上了 `RobotModel` 显示（`/robot_description`，transient local）。
+  * `/obs_predict_vis_pub` 每帧发 **25 步 × 障碍物数** 个圆柱（4 个障碍就是 100 个），
+    叠在屏幕上几乎不可辨。可视化改为每 5 步画一个截面（`obs_kf::visEllipse` 的
+    `kVisStride`），`/obs_predict_pub` 的数据**未改动**。
+  * 观感还包括：TF 显示默认关闭、点云尺寸调小、加了一个俯视视角。
+* **只能复现一次**：`gz-sim-main` 经常在 `Ctrl+C` 后存活；点 Gazebo 窗口的 × 只会杀掉
+  GUI 客户端，服务端继续持有 world，于是下一次启动报
+  `Another world of the same name is running`。新增 `scripts/stop.sh` 做彻底清理，
+  并用 `scripts/start.sh` 在启动前自动调用它，从而可以反复启动。
+
+### 2.11 其它
 
 * `mpc_scene/movetest.cpp`：从 `gazebo_ros` 的 `/gazebo/set_model_state` 服务改为
   gz-transport 请求 `/world/mpc_dcbf/set_pose`，100 Hz 遥操作语义不变（`<static>true</static>`

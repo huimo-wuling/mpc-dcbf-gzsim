@@ -1,36 +1,90 @@
 Panels:
   - Class: rviz_common/Displays
     Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /GlobalPath1
+        - /LocalPath1
+      Splitter Ratio: 0.5
+    Tree Height: 700
 Visualization Manager:
+  Class: ""
   Displays:
     - Class: rviz_default_plugins/Grid
       Enabled: true
       Name: Grid
+      Cell Size: 1
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 30
+      Color: 120; 120; 120
+      Alpha: 0.4
       Value: true
-    - Class: rviz_default_plugins/TF
+
+    - Class: rviz_default_plugins/RobotModel
       Enabled: true
-      Name: TF
-      Value: true
-    - Class: rviz_default_plugins/Path
-      Enabled: true
-      Name: GlobalPath
-      Topic:
+      Name: RobotModel
+      Description Source: Topic
+      Description Topic:
         Depth: 5
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /global_path
+        Value: /robot_description
+      Visual Enabled: true
+      Collision Enabled: false
+      Alpha: 1
       Value: true
+
+    - Class: rviz_default_plugins/TF
+      Enabled: false
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Marker Scale: 0.4
+      Update Interval: 0
+      Value: false
+
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: GlobalPath
+      Line Style:
+        Line Width: 0.06
+        Value: Lines
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /global_path
+      Color: 255; 220; 40
+      Alpha: 1
+      Value: true
+
     - Class: rviz_default_plugins/Path
       Enabled: true
       Name: LocalPath
+      Line Style:
+        Line Width: 0.04
+        Value: Lines
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /local_path
+      Color: 40; 200; 255
+      Alpha: 1
       Value: true
+
     - Class: rviz_default_plugins/Marker
       Enabled: true
       Name: LocalPathVis
@@ -41,9 +95,12 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /pub_path_vis
       Value: true
+
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: PredictedObstacles
+      Namespaces:
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -51,9 +108,12 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /obs_predict_vis_pub
       Value: true
+
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: ObservedObstacles
+      Namespaces:
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -61,34 +121,95 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /local_map_pub/ellipse_vis
       Value: true
+
     - Class: rviz_default_plugins/PointCloud2
       Enabled: true
       Name: LidarPoints
-      Size (m): 0.03
+      Color Transformer: AxisColor
+      Axis: Z
+      Color: 160; 160; 160
+      Size (m): 0.02
+      Size (Pixels): 2
       Style: Flat Squares
+      Decay Time: 0
+      Position Transformer: XYZ
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /velodyne_points
+      Use Fixed Frame: true
       Value: true
+
     - Class: rviz_default_plugins/PointCloud2
       Enabled: true
       Name: LocalPoints
+      Color Transformer: FlatColor
+      Color: 255; 120; 60
       Size (m): 0.05
+      Size (Pixels): 3
       Style: Flat Squares
+      Decay Time: 0
+      Position Transformer: XYZ
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /local_map_pub/local_pcd
+      Use Fixed Frame: true
       Value: true
+
+  Enabled: true
   Global Options:
+    Background Color: 45; 45; 48
     Fixed Frame: world
-    Background Color: 48; 48; 48
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Value: /clicked_point
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
   Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 26
+      Enable Stereo: false
+      Focal Point:
+        X: -0.5
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 1.1
+      Target Frame: world
+      Value: Orbit (rviz)
+      Yaw: 0
+    Saved: ~
 Window Geometry:
-  Height: 900
-  Width: 1400
+  Displays:
+    collapsed: false
+  Height: 950
+  Hide Left Dock: false
+  Hide Right Dock: false
+  Width: 1500
+  X: 60
+  Y: 40

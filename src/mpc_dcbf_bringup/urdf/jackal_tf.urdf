@@ -1,10 +1,101 @@
 <?xml version="1.0"?>
+<!--
+  TF-only description of the Jackal used by robot_state_publisher.
+
+  It carries exactly the same kinematics/geometry as jackal_gz/models/jackal/model.sdf
+  (base 0.42 x 0.31 x 0.184 m, wheels r = 0.098 m at x = +-0.131 / y = +-0.187795,
+  lidar 0.5 m above base_link) so that RViz2 shows the same robot that Gazebo Sim
+  simulates. Visuals here are for display only: physics and sensing come from
+  the SDF.
+-->
 <robot name="jackal_tf">
-  <link name="base_link"/>
-  <link name="velodyne"/>
+  <material name="dark_grey">
+    <color rgba="0.25 0.25 0.27 1.0"/>
+  </material>
+  <material name="tyre_black">
+    <color rgba="0.06 0.06 0.06 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.092" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.42 0.31 0.184"/>
+      </geometry>
+      <material name="dark_grey"/>
+    </visual>
+  </link>
+
+  <!-- ground-truth lidar mount (model.sdf: <pose>0 0 0.5</pose>) -->
+  <link name="velodyne">
+    <visual>
+      <origin xyz="0 0 -0.03" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.06"/>
+      </geometry>
+      <material name="tyre_black"/>
+    </visual>
+  </link>
   <joint name="velodyne_joint" type="fixed">
     <parent link="base_link"/>
     <child link="velodyne"/>
     <origin xyz="0 0 0.5" rpy="0 0 0"/>
+  </joint>
+
+  <!-- wheels; joint names match the states published on /joint_states by gz-sim -->
+  <link name="front_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5707 0 0"/>
+      <geometry><cylinder radius="0.098" length="0.04"/></geometry>
+      <material name="tyre_black"/>
+    </visual>
+  </link>
+  <joint name="front_left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="front_left_wheel"/>
+    <origin xyz="0.131 0.187795 0.0345" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <link name="front_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5707 0 0"/>
+      <geometry><cylinder radius="0.098" length="0.04"/></geometry>
+      <material name="tyre_black"/>
+    </visual>
+  </link>
+  <joint name="front_right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="front_right_wheel"/>
+    <origin xyz="0.131 -0.187795 0.0345" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <link name="rear_left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5707 0 0"/>
+      <geometry><cylinder radius="0.098" length="0.04"/></geometry>
+      <material name="tyre_black"/>
+    </visual>
+  </link>
+  <joint name="rear_left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_left_wheel"/>
+    <origin xyz="-0.131 0.187795 0.0345" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <link name="rear_right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5707 0 0"/>
+      <geometry><cylinder radius="0.098" length="0.04"/></geometry>
+      <material name="tyre_black"/>
+    </visual>
+  </link>
+  <joint name="rear_right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_right_wheel"/>
+    <origin xyz="-0.131 -0.187795 0.0345" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
   </joint>
 </robot>

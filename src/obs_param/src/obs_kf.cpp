@@ -170,6 +170,13 @@ public:
 private:
   void visEllipse(const vector<Ellipse> &obs_ellipses)
   {
+    // Visualization only: ellipses_array holds N (=25) predicted steps per
+    // obstacle, so drawing all of them means 100+ overlapping cylinders per
+    // frame and RViz becomes unreadable. Draw every kVisStride-th step to keep
+    // the "growing prediction fan" of the paper while staying legible.
+    // /obs_predict_pub (what the planner consumes) is NOT affected.
+    static constexpr size_t kVisStride = 5;
+
     visualization_msgs::msg::MarkerArray ellipse_vis;
 
     visualization_msgs::msg::Marker mk;
@@ -182,12 +189,14 @@ private:
 
     for (size_t i = 0; i < obs_ellipses.size(); i++)
     {
-      mk.color.a = 0.4;
+      if (i % kVisStride != 0 && i % kVisStride != kVisStride - 1)
+        continue;
+      mk.color.a = 0.35;
       mk.color.r = 0;
       mk.color.g = 1;
       mk.color.b = 0;
 
-      mk.id = i;
+      mk.id = static_cast<int>(i);
 
       mk.pose.orientation.x = 0.0;
       mk.pose.orientation.y = 0.0;

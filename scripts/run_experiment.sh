@@ -32,6 +32,10 @@ cleanup() {
   wait "$LAUNCH_PID" 2>/dev/null
 }
 
+# a leftover Gazebo server from a previous run makes gz fail with
+# "Another world of the same name is running", so always start from a clean slate
+bash "$ROOT/scripts/stop.sh" > /dev/null 2>&1
+
 echo "[1/3] launching gz-sim (headless) ..."
 ros2 launch mpc_dcbf_bringup simulation.launch.py headless:=true rviz:=false \
   > "$ROOT/results/launch.log" 2>&1 &
