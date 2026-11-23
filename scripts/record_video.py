@@ -119,6 +119,9 @@ def main():
     ap.add_argument('--fps', type=float, default=10.0,
                     help='encoder frame rate (capture runs as fast as the GUI)')
     ap.add_argument('--keep-frames', action='store_true')
+    ap.add_argument('--rviz-window', default='',
+                    help='if set (e.g. "RViz"), record a side-by-side video with '
+                         'that X11/XWayland window next to the Gazebo 3D view')
     args = ap.parse_args()
 
     import cv2  # imported late so --help works without OpenCV
@@ -129,6 +132,22 @@ def main():
 
     if args.camera == 'fixed':
         gz.set_camera(tuple(args.eye), tuple(args.target))
+
+    side = None
+    if args.rviz_window:
+        try:
+            from capture_window import grab as grab_window
+        except ImportError:
+            import sys, os as _os
+            sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+            from capture_window import grab as grab_window
+        side = grab_window(args.rviz_window)
+        if side is None:
+            print('[video] warning: window %r not found, recording Gazebo only'
+                  % args.rviz_window)
+        else:
+            print('[video] side-by-side with window %r (%dx%d)'
+                  % (args.rviz_window, side.width, side.height))
 
     print('[video] recording %.1f s (camera: %s) ...' % (args.duration, args.camera))
     t0 = time.time()
@@ -146,7 +165,19 @@ def main():
         gz.screenshot(frames_dir)
         time.sleep(0.08)
         after = set(glob.glob(os.path.join(frames_dir, '*.png')))
-        frames.extend(sorted(after - before))
+        new = sorted(after - before)
+        frames.extend(new)
+        if side is not None and new:
+            from PIL import Image
+            left = Image.open(new[-1]).convert('RGB')
+            H = 620
+            def fit(im):
+                return im.resize((int(im.width * H / im.height), H), Image.LANCZOS)
+            left, right = fit(left), fit(grab_window(args.rviz_window))
+            canvas = Image.new('RGB', (left.width + right.width + 16, H), (18, 18, 18))
+            canvas.paste(left, (0, 0))
+            canvas.paste(right, (left.width + 16, 0))
+            canvas.save(new[-1], 'PNG')
 
     frames = sorted(glob.glob(os.path.join(frames_dir, '*.png')))
     if not frames:

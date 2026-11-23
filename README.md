@@ -218,7 +218,9 @@ RViz2 只是**可视化/调试工具，不参与控制**：算法节点之间只
 | Gazebo 3D 视图（无 UI） | [`results/gazebo_3d.png`](results/gazebo_3d.png) | 同一时刻的纯 3D 渲染，便于放进 PPT |
 | RViz 运行图 | [`results/rviz_simulation.png`](results/rviz_simulation.png) | 算法中间量：点云、检测椭圆（蓝）+ 预测椭圆（绿）、局部/全局路径，左侧显示项全部 `Status: Ok` |
 | 轨迹与指标图 | [`results/trajectory.png`](results/trajectory.png)、[`results/speed_clearance.png`](results/speed_clearance.png) | 由实验记录离线绘制 |
-| 仿真视频 | `results/reproduction.mp4` | Gazebo GUI 3D 视图的录屏（跟随相机） |
+| Gazebo 仿真视频 | `results/reproduction.mp4` | Gazebo GUI 3D 视图录屏（跟随相机，22 s） |
+| RViz 画面视频 | `results/rviz_video.mp4` | RViz 窗口录屏（1280×856，11 s），可见点云/椭圆/路径随机器人运动实时变化 |
+| 对照图 | `results/gazebo_rviz_combined.png` | Gazebo 与 RViz 同屏并排 |
 
 生成方式：
 
@@ -236,6 +238,9 @@ gz service -s /gui/screenshot --reqtype gz.msgs.StringMsg --reptype gz.msgs.Bool
 
 # 4) 抓 RViz 窗口（Wayland 会话下用 X11 窗口抓取）
 python3 scripts/capture_window.py results/rviz_simulation.png "RViz"
+
+# 5) 录 RViz 画面（RViz 没有录制插件，按窗口抓帧再编码）
+python3 scripts/record_rviz.py --duration 20 --output results/rviz_video.mp4
 ```
 
 > 注意：`record_video.py` 依赖 Gazebo GUI 实际在渲染。**屏幕锁定时 GNOME 会把渲染

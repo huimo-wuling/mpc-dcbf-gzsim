@@ -95,6 +95,38 @@ def walk(dpy, win, depth=0, out=None):
     return out
 
 
+def grab(want, min_size=200):
+    """Return a PIL.Image of the largest mapped window whose title contains `want`."""
+    dpy = X11.XOpenDisplay(None)
+    if not dpy:
+        return None
+    root = X11.XDefaultRootWindow(dpy)
+    cands = []
+    for win, title in walk(dpy, root):
+        if want.lower() not in title.lower():
+            continue
+        a = Attrs()
+        if not X11.XGetWindowAttributes(dpy, win, ctypes.byref(a)):
+            continue
+        if a.map_state == 2 and a.width > min_size and a.height > min_size:
+            cands.append((a.width * a.height, win, a.width, a.height))
+    cands.sort(reverse=True)
+    for _, win, w, h in cands:
+        ERRORS.clear()
+        img = X11.XGetImage(dpy, win, 0, 0, w, h, ctypes.c_ulong(-1).value, 2)
+        X11.XSync(dpy, 0)
+        if not img or ERRORS:
+            continue
+        im = ctypes.cast(img, ctypes.POINTER(XImg)).contents
+        buf = ctypes.string_at(im.data, im.bytes_per_line * im.height)
+        arr = np.frombuffer(buf, np.uint8).reshape(im.height, im.bytes_per_line)
+        arr = arr[:, :im.width * 4].reshape(im.height, im.width, 4)
+        if arr[:, :, :3].mean() < 1.0:
+            continue
+        return Image.fromarray(arr[:, :, [2, 1, 0]])
+    return None
+
+
 def main():
     if len(sys.argv) < 3:
         raise SystemExit(__doc__)
