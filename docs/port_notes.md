@@ -182,3 +182,96 @@ pip3 install --user --break-system-packages casadi==3.8.1
   用 `-s` 只启动服务端，否则启动 GUI。
 * `scripts/import_repos.sh` 用纯 `git` 拉取 grid_map/filters（不依赖 `vcs`）。
 * 规划器额外发布 `/local_planner/solve_time`（Float32），只用于记录求解耗时，不参与控制。
+
+---
+
+## 3. 行为保真核对（2026-11 复核）
+
+复核方式：直接把 `~/catkin_ws/src/MPC-D-CBF` 的原文件与移植版逐项对照，再用实验量测
+闭环行为。发现 **两个会改变机器人行为** 的移植偏差，均已修正；另有两个"环境相关、
+未改上游逻辑"的差异，如实记录。
+
+### 3.1 ⚠️ 差速底盘少了 `wheel_separation_multiplier: 1.5`（已修正）
+
+原车控制链是 Gazebo Classic 的 `diff_drive_controller`，
+`jackal_control/config/control.yaml` 里写着：
+
+```yaml
+wheel_separation_multiplier: 1.5   # 四轮滑移转向的侧滑补偿
+```
+
+几何轮距是 0.37559 m，乘 1.5 后控制器实际按 **0.563385 m** 换算左右轮速，用来补偿
+四轮无法转向时的横向刮擦损失。移植时 `model.sdf` 直接写了 0.37559，于是：
+
+| 指令 ω [rad/s] | 实测角速度（0.37559） | 实测角速度（0.563385） | 论文控制模型假设 |
+|---|---|---|---|
+| 0.5 | — | 0.525 | 0.5 |
+| 1.0 | **0.615**（≈0.62×） | **1.003** | 1.0 |
+| 2.0 | — | 1.794 | 2.0 |
+
+也就是说，修正前机器人"只按指令的 2/3 转向"，而 MPC 的预测模型 `θ_{k+1}=θ_k+ω_kT`
+假设 ω 被精确执行——闭环跟踪因此系统性变差。修正后工作区间内跟踪比 0.90–1.05。
+量测脚本：`python3 scripts/record_rviz.py` 无关，方法是**纯转动实验**
+（kill 掉 `controller`，直接发 `/cmd_vel` 只给 ω，用 gz 的
+`/world/mpc_dcbf/dynamic_pose/info` 读真实偏航角，取稳态中位数）。
+
+### 3.2 ⚠️ 机器人的位姿源换成了轮式里程计（已改回真值）
+
+原车 `scene/src/getrobot_pose.cpp` 配合 Gazebo Classic 的 **`p3d` 插件**，拿到的是
+世界真值位姿。移植版最初把 gz `DiffDrive` 的 `/model/jackal/odometry` 桥接过来当
+`/base_pose_ground_truth`——那是**编码器积分**，四轮滑移转向每打滑一次就积累误差。
+实测一次 60 s 实验结束：
+
+* 轮式里程计：(8.90, 0.00)
+* 仿真真值：(8.27, −1.13)  → **误差 1.3 m**
+
+后果不是"差一点点"，而是规划器**以为自己已经到终点**（判据是距终点 < 1 m 时 v 下界
+放到 0），于是发出 v=0 的规划、机器人半路停住。改法：
+
+* `mpc_scene/src/odom_tf.cpp` 重写为用 gz-transport 订阅
+  `/world/mpc_dcbf/dynamic_pose/info`，取 `jackal` 的位姿 → 广播 TF `world→base_link`
+  → 同时发布 `/base_pose_ground_truth`（与 p3d 等价）；
+* `bridge.yaml` 删掉 DiffDrive 里程计那条桥；
+* `odom_tf` 加 `use_sim_time: True`（不然 TF 时间戳是墙钟，RViz 会报外推失败）。
+
+修正后 `/curr_state`、`/base_pose_ground_truth`、gz 真值三者一致（8.900 / 8.900 / 8.899）。
+
+### 3.3 激光雷达规格与原车不同（未改，已记录）
+
+原车 `jackal_description/urdf/jackal.urdf.xacro` 用的是 velodyne HDL-32E：
+
+```xml
+<HDL-32E parent="base_link" name="velodyne" topic="/velodyne_points"
+          hz="30" samples="440" gpu="false"/>
+```
+
+移植版是 gz `gpu_lidar`：**10 Hz、720 采样、0.3–70 m**，安装高度 0.5 m。
+差异：方位分辨率更细（0.5° vs 0.82°），但刷新率只有 1/3；近端能看 0.3 m（原 0.7 m）。
+`local_map` 本身以 11 Hz 消费最新一帧点云，所以实际影响主要体现在"障碍物运动更新延迟
+≈0.1 s"上，未单独做变量实验。
+
+### 3.4 障碍物横穿速度约为原车的 1/2（未改上游逻辑，已记录）
+
+上游 `moving_cylinder.hpp` 的 `updateState()` 是**每个循环 tick 加一次增量**（不乘 dt）：
+
+```cpp
+model_state_.pose.position.x += twist_.linear.x;
+model_state_.pose.position.y += twist_.linear.y;
+```
+
+所以"障碍物速度"= 增量 × 循环频率。原版每圈要做 8 次 `set_model_state` 服务调用，
+Gazebo Classic 下约 12–14 ms/圈（≈70–80 Hz）；本机 gz-transport 的 `set_pose` 更慢，
+实测 **40.7 Hz**，于是 `vx=-0.01/tick` 的 `cylinder_2` 实际速度是 **0.407 m/s**（原车约 0.7–0.8 m/s）。
+障碍物慢一半 → 机器人从"绕过去"变成"贴着过"，这是最小间距 0.39–0.43 m 与论文 0.828 m
+的主要差距来源。按要求没有改上游的逐 tick 逻辑，也没有为了指标去调障碍物速度。
+
+### 3.5 修正后的三次重复
+
+| 运行 | Min dist [m] | Cons time [s] | Speed var | 重规划 [Hz] | 求解均值 [ms] | 到点误差 [m] |
+|---|---|---|---|---|---|---|
+| #1 | 0.411 | 21.82 | 0.0213 | 18.4 | 20.1 | 0.10 |
+| #2 | 0.387 | 22.78 | 0.1007 | 18.1 | 20.2 | 0.10 |
+| #3 | 0.428 | 21.85 | 0.0196 | 18.4 | 19.6 | 0.10 |
+
+修正前（同样的三次重复）：最小间距 0.529 / 0.072 / **−0.204**（两次接触），
+其中两次跑到中途停住不再前进——正是 3.1 / 3.2 两个偏差造成的。

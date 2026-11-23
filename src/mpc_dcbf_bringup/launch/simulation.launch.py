@@ -66,7 +66,10 @@ def generate_launch_description():
         parameters=[{'robot_description': open(urdf_path).read(), 'use_sim_time': True}],
         output='screen')
 
-    odom_tf = Node(package='mpc_scene', executable='odom_tf', output='screen')
+    # use_sim_time: the TF stamps come from the gz-transport callback, they must
+    # be in simulation time or RViz rejects the transform ("future extrapolation")
+    odom_tf = Node(package='mpc_scene', executable='odom_tf',
+                   parameters=[{'use_sim_time': True}], output='screen')
 
     movetest = Node(
         package='mpc_scene', executable='movetest',

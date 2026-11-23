@@ -15,7 +15,9 @@ target_link_libraries(odom_tf
   std_msgs::std_msgs
   nav_msgs::nav_msgs
   geometry_msgs::geometry_msgs
-  tf2_ros::tf2_ros)
+  tf2_ros::tf2_ros
+  gz-transport::gz-transport
+  gz-msgs::gz-msgs)
 
 add_executable(movetest src/movetest.cpp)
 target_link_libraries(movetest

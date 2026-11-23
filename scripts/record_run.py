@@ -68,10 +68,12 @@ class Recorder(Node):
 
     # ------------------------------------------------------------------ ROS
     def on_odom(self, msg):
+        # /base_pose_ground_truth is already the world pose (mpc_scene/odom_tf
+        # republishes the simulator ground truth, like the upstream p3d plugin)
         p = msg.pose.pose.position
         self.odom.append([round(time.time() - self.t0, 3),
-                          round(self.spawn_x + p.x, 3),
-                          round(self.spawn_y + p.y, 3),
+                          round(p.x, 3),
+                          round(p.y, 3),
                           round(yaw_from_quat(msg.pose.pose.orientation), 4)])
 
     def on_cmd(self, msg):

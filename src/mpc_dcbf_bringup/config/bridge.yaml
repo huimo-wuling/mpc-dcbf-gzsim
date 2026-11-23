@@ -8,11 +8,9 @@
   ros_type_name: "geometry_msgs/msg/Twist"
   gz_type_name: "gz.msgs.Twist"
   direction: ROS_TO_GZ
-- ros_topic_name: "/base_pose_ground_truth"
-  gz_topic_name: "/model/jackal/odometry"
-  ros_type_name: "nav_msgs/msg/Odometry"
-  gz_type_name: "gz.msgs.Odometry"
-  direction: GZ_TO_ROS
+# /base_pose_ground_truth is published by mpc_scene/odom_tf straight from
+# /world/mpc_dcbf/dynamic_pose/info (like the upstream p3d plugin): the DiffDrive
+# wheel odometry drifts ~1.3 m per run on a skid-steer robot.
 - ros_topic_name: "/velodyne_points"
   gz_topic_name: "/velodyne_points/points"
   ros_type_name: "sensor_msgs/msg/PointCloud2"

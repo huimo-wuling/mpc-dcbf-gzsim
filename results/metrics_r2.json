@@ -1,22 +1,22 @@
 {
   "label": "MPC-D-CBF (run 2)",
-  "min_dist_m": 0.07204198484048635,
-  "cons_time_s": 26.628,
-  "react_time_s": 3.941,
-  "speed_var": 0.15569172614899346,
-  "path_length_m": 20.23516733486607,
+  "min_dist_m": 0.3868497782051905,
+  "cons_time_s": 22.783,
+  "react_time_s": 4.054,
+  "speed_var": 0.10067398522024079,
+  "path_length_m": 19.28817853774761,
   "final_xy": [
     8.9,
-    -0.019
+    -0.004
   ],
-  "final_dist_to_goal_m": 0.10178899744078398,
-  "local_plan_hz": 17.183333333333334,
-  "obs_predict_hz": 10.733333333333333,
+  "final_dist_to_goal_m": 0.10007996802557408,
+  "local_plan_hz": 18.083333333333332,
+  "obs_predict_hz": 10.716666666666667,
   "duration_s": 60.0,
   "mpc_latency": {
-    "mean_s": 0.021011534603811437,
-    "p95_s": 0.0468,
-    "max_s": 0.1028,
-    "n": 997
+    "mean_s": 0.020231598513011154,
+    "p95_s": 0.039825,
+    "max_s": 0.1249,
+    "n": 1076
   }
 }

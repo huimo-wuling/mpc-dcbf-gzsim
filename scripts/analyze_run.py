@@ -188,13 +188,22 @@ def main():
         ax.add_patch(plt.Circle((x0, y0), CYLINDER_RADIUS, color='tab:red',
                                 alpha=0.12, zorder=1))
 
-    # predicted (CBF) ellipses at the sample with the smallest clearance
+    # predicted (CBF) ellipses at the sample with the smallest clearance.
+    # Only consider the driving phase: once the robot has reached the goal the
+    # obstacle node teleports the cylinders back to their start poses, and the
+    # KF then extrapolates that jump into a nonsense prediction.
     if run.get('predicted_ellipses'):
-        k = int(np.nanargmin(min_dist))
+        driving = np.hypot(odom[:, 1] - GOAL[0], odom[:, 2] - GOAL[1]) > 1.0
+        if not driving.any():
+            driving = np.ones(len(odom), dtype=bool)
+        k = int(np.nanargmin(np.where(driving, min_dist, np.nan)))
         t_star = odom[k, 0]
         best = min(run['predicted_ellipses'],
                    key=lambda s: abs(s[0] - t_star))
+        rx, ry = odom[k, 1], odom[k, 2]
         for cx, cy, a, b, th in best[1]:
+            if math.hypot(cx - rx, cy - ry) > 8.0:   # teleport artefact
+                continue
             e = matplotlib.patches.Ellipse((cx, cy), 2 * a, 2 * b,
                                            angle=math.degrees(th),
                                            fill=False, color='tab:green',
