@@ -208,6 +208,39 @@ RViz2 只是**可视化/调试工具，不参与控制**：算法节点之间只
 | `colcon build` 找不到 CGAL | `sudo apt install -y libcgal-dev` |
 | 找不到 `grid_map_*` | 先 `bash scripts/import_repos.sh` 再编译 |
 
+## 6. 复现论文结果（含答辩素材）
+
+### 6.0 运行截图与视频
+
+| 素材 | 文件 | 说明 |
+|---|---|---|
+| Gazebo Sim 运行图 | [`results/gazebo_sim.png`](results/gazebo_sim.png) | 仿真窗口：世界属性（DART 物理）、实体树（`ground_plane`、`cylinder_0..7`、`sun`、`jackal`）、机器人行驶中的 3D 视图 |
+| Gazebo 3D 视图（无 UI） | [`results/gazebo_3d.png`](results/gazebo_3d.png) | 同一时刻的纯 3D 渲染，便于放进 PPT |
+| RViz 运行图 | [`results/rviz_simulation.png`](results/rviz_simulation.png) | 算法中间量：点云、检测椭圆（蓝）+ 预测椭圆（绿）、局部/全局路径，左侧显示项全部 `Status: Ok` |
+| 轨迹与指标图 | [`results/trajectory.png`](results/trajectory.png)、[`results/speed_clearance.png`](results/speed_clearance.png) | 由实验记录离线绘制 |
+| 仿真视频 | `results/reproduction.mp4` | Gazebo GUI 3D 视图的录屏（跟随相机） |
+
+生成方式：
+
+```bash
+# 1) 带 GUI 启动（视频需要 Gazebo GUI 在渲染）
+bash scripts/start.sh rviz:=false
+
+# 2) 录视频（跟随相机；也可 --camera fixed --eye x y z --target x y z）
+python3 scripts/record_video.py --duration 25 --output results/reproduction.mp4
+
+# 3) 抓单帧：Gazebo 自带的 /gui/screenshot 服务
+gz service -s /gui/screenshot --reqtype gz.msgs.StringMsg --reptype gz.msgs.Boolean \
+  --timeout 5000 --req 'data: "/tmp/shots"'
+#   -> /tmp/shots/<时间戳>.png
+
+# 4) 抓 RViz 窗口（Wayland 会话下用 X11 窗口抓取）
+python3 scripts/capture_window.py results/rviz_simulation.png "RViz"
+```
+
+> 注意：`record_video.py` 依赖 Gazebo GUI 实际在渲染。**屏幕锁定时 GNOME 会把渲染
+> 节流到 ~1 fps**，录像会只有几帧；录之前请保持桌面处于解锁且可见状态。
+
 ## 6. 复现论文结果
 
 ```bash

@@ -26,7 +26,7 @@ signal_matches() {
   for pid in $(pgrep -f "$pattern" 2>/dev/null); do
     [ "$pid" = "$$" ] && continue
     [ "$pid" = "$PPID" ] && continue
-    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || continue
+    cmd=$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline") || continue
     case "$cmd" in
       *stop.sh*) continue ;;
     esac
